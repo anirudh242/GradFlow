@@ -2,6 +2,31 @@
 #include <string>
 #include <stdexcept>
 
+// Helper to find broadcasted shape of 2 shapes
+std::vector<int> broadcastShapes(const std::vector<int>& shapeA, const std::vector<int>& shapeB) {
+    int ndimA = shapeA.size();
+    int ndimB = shapeB.size();
+    int outndim = std::max(ndimA, ndimB);
+    
+    std::vector<int> outShape(outndim);
+    
+    for (int i = 0; i < outndim; i++) {
+        int dimA = (ndimA - 1 - i >= 0) ? shapeA[ndimA - 1 - i] : 1;
+        int dimB = (ndimB - 1 - i >= 0) ? shapeB[ndimB - 1 - i] : 1;
+        
+        if (dimA == dimB) {
+            outShape[outndim - 1 - i] = dimA;
+        } else if (dimA == 1) {
+            outShape[outndim - 1 - i] = dimB;
+        } else if (dimB == 1) {
+            outShape[outndim - 1 - i] = dimA;
+        } else {
+            throw std::runtime_error("Shapes are not broadcastable.");
+        }
+    }
+    return outShape;
+}
+
 Tensor::Tensor(const std::vector<int>& s) : shape(s) {
     int dataSize = 1;
     for (int i : shape) {
@@ -67,4 +92,29 @@ Tensor Tensor::broadcastTo(const std::vector<int>& targetShape) const {
     }
 
     return Tensor(data, targetShape, newStrides);
+}
+
+Tensor Tensor::operator+(const Tensor& other) const {
+    // broadcasting
+    std::vector<int> commonShape = broadcastShapes(this->shape, other.shape);
+    Tensor broadA = this->broadcastTo(commonShape);
+    Tensor broadB = other.broadcastTo(commonShape);
+
+    Tensor result(commonShape);
+
+    int total = 1;
+    for (int dim : commonShape)
+        total *= dim;
+    
+    std::vector<int> curr(commonShape.size(), 0);
+    
+    for (int flati = 0; flati < total; flati++) {
+        for (int j = 0; j < commonShape.size(); j++) {
+            curr[j] = (flati / result.strides[j]) % commonShape[j];    
+        }
+
+        result.at(curr) = broadA.at(curr) + broadB.at(curr);
+    }
+
+    return result;
 }

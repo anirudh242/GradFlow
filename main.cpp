@@ -1,21 +1,19 @@
 #include <iostream>
-#include <vector>
 #include "Tensor.hpp"
 
 int main() {
-    Tensor b({3});
-    b.at({0}) = 1.1;
-    b.at({1}) = 2.2;
-    b.at({2}) = 3.3;
+    Tensor weights({2, 3});
+    weights.at({0, 0}) = 1.0; weights.at({0, 1}) = 2.0; weights.at({0, 2}) = 3.0;
+    weights.at({1, 0}) = 4.0; weights.at({1, 1}) = 5.0; weights.at({1, 2}) = 6.0;
 
-    Tensor B_matrix = b.broadcastTo({4, 3});
+    Tensor bias({3});
+    bias.at({0}) = 10.0; bias.at({1}) = 20.0; bias.at({2}) = 30.0;
 
-    std::cout << "Broadcasted Strides: {" 
-              << B_matrix.strides[0] << ", " 
-              << B_matrix.strides[1] << "}\n";
+    Tensor output = weights + bias;
 
-    std::cout << "Row 0, Col 1: " << B_matrix.at({0, 1}) << "\n";
-    std::cout << "Row 3, Col 1: " << B_matrix.at({3, 1}) << "\n";
+    std::cout << "Output Shape: {" << output.shape[0] << ", " << output.shape[1] << "}\n";
+    std::cout << "Row 0: " << output.at({0, 0}) << ", " << output.at({0, 1}) << ", " << output.at({0, 2}) << "\n";
+    std::cout << "Row 1: " << output.at({1, 0}) << ", " << output.at({1, 1}) << ", " << output.at({1, 2}) << "\n";
 
     return 0;
 }
