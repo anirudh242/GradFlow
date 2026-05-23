@@ -33,6 +33,7 @@ Tensor::Tensor(const std::vector<int>& s) : shape(s) {
         dataSize *= i;  
     }
     data.assign(dataSize, 0.0);
+    grad.assign(dataSize, 0.0);
 
     strides.resize(shape.size());
     int currStride = 1;
@@ -63,6 +64,10 @@ double& Tensor::at(const std::vector<int>& indices) {
     }
 
     return data[flatIndex];
+}
+
+void Tensor::zeroGrad() {
+    std::fill(grad.begin(), grad.end(), 0.0);
 }
 
 Tensor Tensor::broadcastTo(const std::vector<int>& targetShape) const {
@@ -115,6 +120,31 @@ Tensor Tensor::operator+(const Tensor& other) const {
 
         result.at(curr) = broadA.at(curr) + broadB.at(curr);
     }
+
+    result.prev.push_back(this);
+    result.prev.push_back(&other);
+
+    std::vector<int> resultStrides = result.strides;
+    std::vector<int> broadAStrides = broadA.strides;
+    std::vector<int> broadBStrides= broadB.strides;
+
+    result._backward = [this, &other, commonShape, resultStrides, broadAStrides, broadBStrides](const std::vector<double>& outGrad) {
+        int total = outGrad.size();
+
+        for (int flati = 0; flati < total; flati++) {
+            int flatA = 0;
+            int flatB = 0;
+
+            for (int j = 0; j < commonShape.size(); j++) {
+                int axis = (flati / resultStrides[j]) % commonShape[j];
+                flatA += axis * broadAStrides[j];
+                flatB += axis * broadBStrides[j];
+            }
+            
+            this->grad[flatA] += 1.0 * outGrad[flati];
+            other.grad[flatB] += 1.0 * outGrad[flati];
+        }
+    };
 
     return result;
 }
