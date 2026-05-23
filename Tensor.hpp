@@ -14,4 +14,5 @@ public:
     Tensor broadcastTo(const std::vector<int>& targetShape) const;
 
     Tensor operator+(const Tensor& other) const;
+    Tensor operator*(const Tensor& other) const;
 };

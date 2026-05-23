@@ -118,3 +118,80 @@ Tensor Tensor::operator+(const Tensor& other) const {
 
     return result;
 }
+
+Tensor Tensor::operator*(const Tensor& other) const {
+    int colsA = this->shape[this->shape.size() - 1];
+    int rowsA = this->shape[this->shape.size() - 2];
+    int colsB = other.shape[other.shape.size() - 1];
+    int rowsB = other.shape[other.shape.size() - 2];
+
+    if (colsA != rowsB)
+        throw std::runtime_error("Inner dimensions do not match");
+        
+    std::vector<int> batchShapeA(
+        this->shape.begin(), 
+        this->shape.end() >= this->shape.begin() + 2 ? this->shape.end() - 2 : this->shape.begin()
+    );
+    std::vector<int> batchShapeB(
+        other.shape.begin(), 
+        other.shape.end() >= other.shape.begin() + 2 ? other.shape.end() - 2: other.shape.begin()
+    );
+    std::vector<int> finalBatchShape = broadcastShapes(batchShapeA, batchShapeB);
+
+    std::vector<int> targetShapeA = finalBatchShape;
+    targetShapeA.push_back(rowsA);
+    targetShapeA.push_back(colsA);
+    Tensor Ab = this->broadcastTo(targetShapeA);
+
+    std::vector<int> targetShapeB = finalBatchShape;
+    targetShapeB.push_back(rowsB);
+    targetShapeB.push_back(colsB);
+    Tensor Bb = other.broadcastTo(targetShapeB);
+
+    std::vector<int> finalShape = finalBatchShape;
+    finalShape.push_back(rowsA);
+    finalShape.push_back(colsB);
+    Tensor result(finalShape);
+
+    int totalBatches = 1;
+    for (int dim : finalBatchShape) {
+        totalBatches *= dim;
+    }
+
+    std::vector<int> batchStrides(finalBatchShape.size(), 0);
+    int currBatchStride = 1;
+    for (int i = finalBatchShape.size() - 1; i >= 0; i--) {
+        batchStrides[i] = currBatchStride;
+        currBatchStride *= finalBatchShape[i];
+    }
+
+    std::vector<int> batchcoords(finalBatchShape.size(), 0);
+    for (int b = 0; b < totalBatches; b++) {
+        
+        for (int i = 0; i < finalBatchShape.size(); i++) {
+            batchcoords[i] = (b / batchStrides[i]) % finalBatchShape[i];
+        }
+        for (int r = 0; r < rowsA; r++) {
+            for (int c = 0; c < colsB; c++) {
+                double sum = 0.0;
+                for (int k = 0; k < colsA; k++) {
+                    std::vector<int> coordA = batchcoords;
+                    coordA.push_back(r);
+                    coordA.push_back(k);
+
+                    std::vector<int> coordB = batchcoords;
+                    coordB.push_back(k);
+                    coordB.push_back(c);
+
+                    sum += Ab.at(coordA) * Bb.at(coordB);
+                }
+
+                std::vector<int> coordresult = batchcoords;
+                coordresult.push_back(r);
+                coordresult.push_back(c);
+                result.at(coordresult) = sum;
+            }
+        }
+    }
+    return result;
+}
