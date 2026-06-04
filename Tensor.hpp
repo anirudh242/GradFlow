@@ -1,6 +1,7 @@
 #pragma once
 #include <vector>
 #include <functional>
+#include <string>
 
 class Tensor {
 public:
@@ -10,6 +11,7 @@ public:
     std::vector<int> strides;
     std::vector<const Tensor*> prev;
     std::function<void(const std::vector<double>&)> _backward;
+    std::string _op;
 
     Tensor(const std::vector<int>& shape);
     Tensor(const std::vector<double> data, const std::vector<int> shape, const std::vector<int> strides);

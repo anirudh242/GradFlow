@@ -103,8 +103,6 @@ void Tensor::backward() {
 
     build_topo(this);
 
-    this->grad.assign(this->grad.size(), 1.0);
-
     for (auto it = topo.rbegin(); it != topo.rend(); ++it) {
         const Tensor* current_node = *it;
         if (current_node->_backward) {
@@ -157,7 +155,7 @@ Tensor Tensor::operator+(const Tensor& other) const {
     std::vector<int> curr(commonShape.size(), 0);
     
     for (size_t flati = 0; flati < total; flati++) {
-        for (int j = 0; j < commonShape.size(); j++) {
+        for (size_t j = 0; j < commonShape.size(); j++) {
             curr[j] = (flati / result.strides[j]) % commonShape[j];    
         }
 
@@ -178,7 +176,7 @@ Tensor Tensor::operator+(const Tensor& other) const {
             size_t flatA = 0;
             size_t flatB = 0;
 
-            for (int j = 0; j < commonShape.size(); j++) {
+            for (size_t j = 0; j < commonShape.size(); j++) {
                 int axis = (flati / resultStrides[j]) % commonShape[j];
                 flatA += axis * broadAStrides[j];
                 flatB += axis * broadBStrides[j];
@@ -188,6 +186,8 @@ Tensor Tensor::operator+(const Tensor& other) const {
             other.grad[flatB] += 1.0 * outGrad[flati];
         }
     };
+
+    result._op = "+";
 
     return result;
 }
@@ -241,7 +241,7 @@ Tensor Tensor::operator*(const Tensor& other) const {
     std::vector<int> batchcoords(finalBatchShape.size(), 0);
     for (int b = 0; b < totalBatches; b++) {
         
-        for (int i = 0; i < finalBatchShape.size(); i++) {
+        for (size_t i = 0; i < finalBatchShape.size(); i++) {
             batchcoords[i] = (b / batchStrides[i]) % finalBatchShape[i];
         }
         for (int r = 0; r < rowsA; r++) {
@@ -288,6 +288,8 @@ Tensor Tensor::operator*(const Tensor& other) const {
         }
         
     };
+
+    result._op = "*";
 
     return result;
 }

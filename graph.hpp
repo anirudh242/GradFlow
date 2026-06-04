@@ -1,12 +1,6 @@
 #pragma once
+#include "Tensor.hpp"
+#include <string>
 
-#include "Value.hpp"
-#include <set>
-
-// trace graph
-void trace(V root,
-           std::set<Value*>& nodes,
-           std::set<std::pair<Value*, Value*>>& edges);
-
-// draw graph
-void draw_dot(V root);
+// Generates a Graphviz .dot file from a Tensor computation graph
+void draw_graph(const Tensor* root, const std::string& filename = "graph.dot");

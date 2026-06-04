@@ -1,66 +1,63 @@
 #include "graph.hpp"
+#include <iostream>
 #include <fstream>
+#include <sstream>
+#include <set>
+#include <functional>
+#include <cstdint>
 
-// collect nodes + edges
-void trace(V root,
-           std::set<Value*>& nodes,
-           std::set<std::pair<Value*, Value*>>& edges) {
-
-    if (!nodes.count(root.get())) {
-        nodes.insert(root.get());
-
-        for (auto& child : root->prev) {
-            edges.insert({child.get(), root.get()});
-            trace(child, nodes, edges);
-        }
+// A quick helper to format the shape array into a string "[32, 64]"
+std::string shape_to_string(const std::vector<int>& shape) {
+    std::stringstream ss;
+    ss << "[";
+    for (size_t i = 0; i < shape.size(); i++) {
+        ss << shape[i] << (i == shape.size() - 1 ? "" : ", ");
     }
+    ss << "]";
+    return ss.str();
 }
 
-// generate dot file
-void draw_dot(V root) {
-    std::set<Value*> nodes;
-    std::set<std::pair<Value*, Value*>> edges;
+void draw_graph(const Tensor* root, const std::string& filename) {
+    std::ofstream out(filename);
+    out << "digraph G {\n";
+    out << "  rankdir=LR;\n"; // Left to Right layout
+    out << "  node [shape=record, style=filled, fillcolor=\"#282a36\", fontcolor=\"#f8f8f2\", color=\"#6272a4\"];\n"; 
+    out << "  edge [color=\"#6272a4\"];\n";
 
-    trace(root, nodes, edges);
+    std::vector<const Tensor*> topo;
+    std::set<const Tensor*> visited;
+    
+    std::function<void(const Tensor*)> build_topo = [&](const Tensor* v) {
+        if (!v) return;
+        if (visited.find(v) == visited.end()) {
+            visited.insert(v);
+            for (const Tensor* child : v->prev) {
+                build_topo(child);
+            }
+            topo.push_back(v);
+        }
+    };
+    
+    build_topo(root);
 
-    std::ofstream file("graph.dot");
+    for (const Tensor* node : topo) {
+        // Use the raw memory address as the unique ID for Graphviz
+        std::string uid = std::to_string(reinterpret_cast<uintptr_t>(node));
+        
+        std::string op_label = node->_op.empty() ? "Input/Weight" : node->_op;
 
-    file << "digraph G {\n";
-    file << "rankdir=LR;\n";  // left to right layout
+        out << "  \"" << uid << "\" [label=\"{ " 
+            << "Shape: " << shape_to_string(node->shape) 
+            << " | op: " << op_label
+            << " }\"];\n";
 
-    // nodes
-    for (auto n : nodes) {
-        // value node
-        file << "\"" << n << "\" [label=\"{"
-             << n->label
-             << " | data=" << n->data
-             << " | grad=" << n->grad
-             << "}\", shape=record];\n";
-
-        // op node (if exists)
-        if (!n->op.empty()) {
-            file << "\"" << n << n->op << "\" [label=\""
-                 << n->op << "\"];\n";
-
-            // connect op -> value
-            file << "\"" << n << n->op << "\" -> \"" << n << "\";\n";
+        for (const Tensor* parent : node->prev) {
+            if (!parent) continue;
+            std::string p_uid = std::to_string(reinterpret_cast<uintptr_t>(parent));
+            out << "  \"" << p_uid << "\" -> \"" << uid << "\";\n";
         }
     }
 
-    // edges (connect parents to op nodes)
-    for (auto e : edges) {
-        auto parent = e.first;
-        auto child = e.second;
-
-        if (!child->op.empty()) {
-            // parent → op
-            file << "\"" << parent << "\" -> \""
-                 << child << child->op << "\";\n";
-        } else {
-            // fallback (no op)
-            file << "\"" << parent << "\" -> \"" << child << "\";\n";
-        }
-    }
-
-    file << "}\n";
+    out << "}\n";
+    std::cout << "Graph exported to " << filename << ". Run: dot -Tsvg " << filename << " -o graph.svg\n";
 }
