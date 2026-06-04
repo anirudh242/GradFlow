@@ -25,4 +25,6 @@ public:
 
     Tensor operator+(const Tensor& other) const;
     Tensor operator*(const Tensor& other) const;
+    Tensor operator-(const Tensor& other) const;
+    Tensor pow(const double exp) const;
 };

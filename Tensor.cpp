@@ -2,6 +2,7 @@
 #include <string>
 #include <stdexcept>
 #include <set>
+#include <cmath>
 
 // Helper to find broadcasted shape of 2 shapes
 std::vector<int> broadcastShapes(const std::vector<int>& shapeA, const std::vector<int>& shapeB) {
@@ -291,5 +292,75 @@ Tensor Tensor::operator*(const Tensor& other) const {
 
     result._op = "*";
 
+    return result;
+}
+
+Tensor Tensor::operator-(const Tensor& other) const {
+    std::vector<int> commonShape = broadcastShapes(this->shape, other.shape);
+    Tensor broadA = this->broadcastTo(commonShape);
+    Tensor broadB = other.broadcastTo(commonShape);
+
+    Tensor result(commonShape);
+
+    size_t total = 1;
+    for (int dim : commonShape)
+        total *= dim;
+    
+    std::vector<int> curr(commonShape.size(), 0);
+    
+    for (size_t flati = 0; flati < total; flati++) {
+        for (size_t j = 0; j < commonShape.size(); j++) {
+            curr[j] = (flati / result.strides[j]) % commonShape[j];    
+        }
+
+        result.at(curr) = broadA.at(curr) - broadB.at(curr);
+    }
+
+    result.prev.push_back(this);
+    result.prev.push_back(&other);
+
+    std::vector<int> resultStrides = result.strides;
+    std::vector<int> broadAStrides = broadA.strides;
+    std::vector<int> broadBStrides= broadB.strides;
+
+    result._backward = [this, &other, commonShape, resultStrides, broadAStrides, broadBStrides](const std::vector<double>& outGrad) {
+        size_t total = outGrad.size();
+
+        for (size_t flati = 0; flati < total; flati++) {
+            size_t flatA = 0;
+            size_t flatB = 0;
+
+            for (size_t j = 0; j < commonShape.size(); j++) {
+                int axis = (flati / resultStrides[j]) % commonShape[j];
+                flatA += axis * broadAStrides[j];
+                flatB += axis * broadBStrides[j];
+            }
+            
+            this->grad[flatA] += 1.0 * outGrad[flati];
+            other.grad[flatB] -= 1.0 * outGrad[flati];
+        }
+    };
+
+    result._op = "-";
+
+    return result;
+}
+
+Tensor Tensor::pow(const double exp) const {
+    Tensor result(this->shape);
+    
+    for (size_t i = 0; i < this->data.size(); i++) {
+        result.data[i] = std::pow(this->data[i], exp);
+    }
+    result.prev.push_back(this);
+
+    result._backward = [this, exp](const std::vector<double>& outGrad) {
+        for (size_t i = 0; i < this->grad.size(); i++) {
+            double derivative = exp * std::pow(this->data[i], exp-1.0);
+            this->grad[i] += outGrad[i] * derivative;
+        }
+    };
+
+    result._op = "^" + std::to_string(exp);
     return result;
 }
