@@ -19,6 +19,7 @@ public:
     Tensor transpose() const;
 
     void zeroGrad();
+    void backward();
 
     Tensor operator+(const Tensor& other) const;
     Tensor operator*(const Tensor& other) const;

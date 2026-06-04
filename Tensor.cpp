@@ -1,6 +1,7 @@
 #include "Tensor.hpp"
 #include <string>
 #include <stdexcept>
+#include <set>
 
 // Helper to find broadcasted shape of 2 shapes
 std::vector<int> broadcastShapes(const std::vector<int>& shapeA, const std::vector<int>& shapeB) {
@@ -83,6 +84,33 @@ Tensor Tensor::transpose() const {
 
 void Tensor::zeroGrad() {
     std::fill(grad.begin(), grad.end(), 0.0);
+}
+
+void Tensor::backward() {
+    std::vector<const Tensor*> topo;
+    std::set<const Tensor*> visited;
+
+    std::function<void(const Tensor*)> build_topo = [&](const Tensor* v) {
+        if (visited.find(v) == visited.end()){
+            visited.insert(v);
+            for (const Tensor* child : v->prev) {
+                if (!child) continue;
+                build_topo(child);
+            }
+            topo.push_back(v);
+        }
+    };
+
+    build_topo(this);
+
+    this->grad.assign(this->grad.size(), 1.0);
+
+    for (auto it = topo.rbegin(); it != topo.rend(); ++it) {
+        const Tensor* current_node = *it;
+        if (current_node->_backward) {
+            current_node->_backward(current_node->grad);
+        }
+    }
 }
 
 Tensor Tensor::broadcastTo(const std::vector<int>& targetShape) const {
