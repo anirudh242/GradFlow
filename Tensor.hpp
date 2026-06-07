@@ -23,8 +23,11 @@ public:
     void zeroGrad();
     void backward();
 
+    Tensor relu() const;
+
     Tensor operator+(const Tensor& other) const;
     Tensor operator*(const Tensor& other) const;
     Tensor operator-(const Tensor& other) const;
     Tensor pow(const double exp) const;
+    Tensor sum() const;
 };

@@ -364,3 +364,41 @@ Tensor Tensor::pow(const double exp) const {
     result._op = "^" + std::to_string(exp);
     return result;
 }
+
+Tensor Tensor::sum() const {
+    Tensor result({1});
+    double total = 0.0;
+    for (double i: this->data)
+        total += i;
+    result.data[0] = total;
+
+    result.prev.push_back(this);
+
+    result._backward = [this](const std::vector<double>& outGrad) {
+        for (size_t i = 0; i < this->grad.size(); i++)
+            this->grad[i] += 1.0 * outGrad[0];
+    };
+
+    result._op = "sum";
+    return result;
+}
+
+Tensor Tensor::relu() const {
+    Tensor result(this->shape);
+
+    for (size_t i = 0; i < this->data.size(); i++) {
+        result.data[i] = (this->data[i] > 0.0) ? this->data[i] : 0.0;
+    }
+
+    result.prev.push_back(this);
+
+    result._backward = [this](const std::vector<double>& outGrad) {
+        for (size_t i = 0; i < this->grad.size(); i++) {
+            double localDer = (this->data[i] > 0.0) ? 1.0 : 0.0;
+            this->grad[i] += outGrad[i] * localDer;
+        }
+    };
+    
+    result._op = "ReLU";
+    return result;
+}
