@@ -11,7 +11,7 @@ add_executable(main
     main.cpp
     graph.cpp
     Tensor.cpp
-    Loss.cpp
+    Arena.cpp
 )
 
 add_custom_target(run

@@ -1,4 +1,5 @@
 #include "Tensor.hpp"
+#include "Arena.hpp"
 #include <string>
 #include <stdexcept>
 #include <set>
@@ -34,8 +35,14 @@ Tensor::Tensor(const std::vector<int>& s) : shape(s) {
     for (int i : shape) {
         dataSize *= i;  
     }
-    data.assign(dataSize, 0.0);
-    grad.assign(dataSize, 0.0);
+    size = dataSize;
+    data = globalArena.allocate(size);
+    grad = globalArena.allocate(size);
+
+    for (size_t i = 0; i < size; i++) {
+        data[i] = 0.0;
+        grad[i] = 0.0;
+    }
 
     strides.resize(shape.size());
     int currStride = 1;
@@ -46,10 +53,18 @@ Tensor::Tensor(const std::vector<int>& s) : shape(s) {
 }
 
 Tensor::Tensor(
-    const std::vector<double> data, 
+    const std::vector<double> input_data, 
     const std::vector<int> shape, 
     const std::vector<int> strides
-) : data(data), shape(shape), strides(strides) {}
+) : shape(shape), strides(strides) {
+    size = input_data.size();
+    data = globalArena.allocate(size);
+    grad = globalArena.allocate(size);
+    for (size_t i = 0; i < size; i++) {
+        data[i] = input_data[i];
+        grad[i] = 0.0;
+    }
+}
 
 double& Tensor::at(const std::vector<int>& indices) {
     if (indices.size() != shape.size()) {
@@ -69,22 +84,25 @@ double& Tensor::at(const std::vector<int>& indices) {
 }
 
 Tensor Tensor::transpose() const {
-    int ndim = this->shape.size();
+    int ndim = shape.size();
     if (ndim < 2) 
         return *this;
 
-    std::vector<int> newShape = this->shape;
-    std::vector<int> newStrides = this->strides;
+    std::vector<int> newShape = shape;
+    std::vector<int> newStrides = strides;
 
     // batches stay the same, rows and cols of 2d matrices swap
     std::swap(newShape[ndim - 1], newShape[ndim - 2]);
     std::swap(newStrides[ndim - 1], newStrides[ndim - 2]);
 
-    return Tensor(this->data, newShape, newStrides);
+    std::vector<double> vec_data(data, data + size);
+    return Tensor(vec_data, newShape, newStrides);
 }
 
 void Tensor::zeroGrad() {
-    std::fill(grad.begin(), grad.end(), 0.0);
+    for (size_t i = 0; i < size; i++) {
+        grad[i] = 0.0;
+    }
 }
 
 void Tensor::backward() {
@@ -138,13 +156,14 @@ Tensor Tensor::broadcastTo(const std::vector<int>& targetShape) const {
             throw std::runtime_error("Shapes can't be broadcasted");
     }
 
-    return Tensor(data, targetShape, newStrides);
+    std::vector<double> vec_data(data, data + size);
+    return Tensor(vec_data, targetShape, newStrides);
 }
 
 Tensor Tensor::operator+(const Tensor& other) const {
     // broadcasting
-    std::vector<int> commonShape = broadcastShapes(this->shape, other.shape);
-    Tensor broadA = this->broadcastTo(commonShape);
+    std::vector<int> commonShape = broadcastShapes(shape, other.shape);
+    Tensor broadA = broadcastTo(commonShape);
     Tensor broadB = other.broadcastTo(commonShape);
 
     Tensor result(commonShape);
@@ -169,11 +188,10 @@ Tensor Tensor::operator+(const Tensor& other) const {
     std::vector<int> resultStrides = result.strides;
     std::vector<int> broadAStrides = broadA.strides;
     std::vector<int> broadBStrides= broadB.strides;
+    size_t res_size = result.size;
 
-    result._backward = [this, &other, commonShape, resultStrides, broadAStrides, broadBStrides](const std::vector<double>& outGrad) {
-        size_t total = outGrad.size();
-
-        for (size_t flati = 0; flati < total; flati++) {
+    result._backward = [this, &other, commonShape, resultStrides, broadAStrides, broadBStrides, res_size](const double* outGrad) {
+        for (size_t flati = 0; flati < res_size; flati++) {
             size_t flatA = 0;
             size_t flatB = 0;
 
@@ -183,7 +201,7 @@ Tensor Tensor::operator+(const Tensor& other) const {
                 flatB += axis * broadBStrides[j];
             }
             
-            this->grad[flatA] += 1.0 * outGrad[flati];
+            grad[flatA] += 1.0 * outGrad[flati];
             other.grad[flatB] += 1.0 * outGrad[flati];
         }
     };
@@ -194,8 +212,8 @@ Tensor Tensor::operator+(const Tensor& other) const {
 }
 
 Tensor Tensor::operator*(const Tensor& other) const {
-    int colsA = this->shape[this->shape.size() - 1];
-    int rowsA = this->shape[this->shape.size() - 2];
+    int colsA = shape[shape.size() - 1];
+    int rowsA = shape[shape.size() - 2];
     int colsB = other.shape[other.shape.size() - 1];
     int rowsB = other.shape[other.shape.size() - 2];
 
@@ -203,8 +221,8 @@ Tensor Tensor::operator*(const Tensor& other) const {
         throw std::runtime_error("Inner dimensions do not match");
         
     std::vector<int> batchShapeA(
-        this->shape.begin(), 
-        this->shape.end() >= this->shape.begin() + 2 ? this->shape.end() - 2 : this->shape.begin()
+        shape.begin(), 
+        shape.end() >= shape.begin() + 2 ? shape.end() - 2 : shape.begin()
     );
     std::vector<int> batchShapeB(
         other.shape.begin(), 
@@ -215,7 +233,7 @@ Tensor Tensor::operator*(const Tensor& other) const {
     std::vector<int> targetShapeA = finalBatchShape;
     targetShapeA.push_back(rowsA);
     targetShapeA.push_back(colsA);
-    Tensor Ab = this->broadcastTo(targetShapeA);
+    Tensor Ab = broadcastTo(targetShapeA);
 
     std::vector<int> targetShapeB = finalBatchShape;
     targetShapeB.push_back(rowsB);
@@ -270,20 +288,22 @@ Tensor Tensor::operator*(const Tensor& other) const {
 
     std::vector<int> resShape = result.shape;
     std::vector<int> resStrides = result.strides;
+    size_t res_size = result.size;
 
     result.prev.push_back(this);
     result.prev.push_back(&other);
 
-    result._backward = [this, &other, resShape, resStrides](const std::vector<double>& outGrad) {
-        Tensor dC(outGrad, resShape, resStrides);
-        Tensor At = this->transpose();
+    result._backward = [this, &other, resShape, resStrides, res_size](const double* outGrad) {
+        std::vector<double> outGradVec(outGrad, outGrad + res_size);
+        Tensor dC(outGradVec, resShape, resStrides);
+        Tensor At = transpose();
         Tensor Bt = other.transpose();
         Tensor dA = dC * Bt;
         Tensor dB = At * dC;
-        for (size_t i = 0; i < this->grad.size(); i++) {
-            this->grad[i] += dA.data[i];
+        for (size_t i = 0; i < size; i++) {
+            grad[i] += dA.data[i];
         }
-        for (size_t i = 0; i < other.grad.size(); i++)
+        for (size_t i = 0; i < other.size; i++)
         {
             other.grad[i] += dB.data[i];
         }
@@ -296,8 +316,8 @@ Tensor Tensor::operator*(const Tensor& other) const {
 }
 
 Tensor Tensor::operator-(const Tensor& other) const {
-    std::vector<int> commonShape = broadcastShapes(this->shape, other.shape);
-    Tensor broadA = this->broadcastTo(commonShape);
+    std::vector<int> commonShape = broadcastShapes(shape, other.shape);
+    Tensor broadA = broadcastTo(commonShape);
     Tensor broadB = other.broadcastTo(commonShape);
 
     Tensor result(commonShape);
@@ -322,11 +342,10 @@ Tensor Tensor::operator-(const Tensor& other) const {
     std::vector<int> resultStrides = result.strides;
     std::vector<int> broadAStrides = broadA.strides;
     std::vector<int> broadBStrides= broadB.strides;
+    size_t res_size = result.size;
 
-    result._backward = [this, &other, commonShape, resultStrides, broadAStrides, broadBStrides](const std::vector<double>& outGrad) {
-        size_t total = outGrad.size();
-
-        for (size_t flati = 0; flati < total; flati++) {
+    result._backward = [this, &other, commonShape, resultStrides, broadAStrides, broadBStrides, res_size](const double* outGrad) {
+        for (size_t flati = 0; flati < res_size; flati++) {
             size_t flatA = 0;
             size_t flatB = 0;
 
@@ -336,7 +355,7 @@ Tensor Tensor::operator-(const Tensor& other) const {
                 flatB += axis * broadBStrides[j];
             }
             
-            this->grad[flatA] += 1.0 * outGrad[flati];
+            grad[flatA] += 1.0 * outGrad[flati];
             other.grad[flatB] -= 1.0 * outGrad[flati];
         }
     };
@@ -347,17 +366,17 @@ Tensor Tensor::operator-(const Tensor& other) const {
 }
 
 Tensor Tensor::pow(const double exp) const {
-    Tensor result(this->shape);
+    Tensor result(shape);
     
-    for (size_t i = 0; i < this->data.size(); i++) {
-        result.data[i] = std::pow(this->data[i], exp);
+    for (size_t i = 0; i < size; i++) {
+        result.data[i] = std::pow(data[i], exp);
     }
     result.prev.push_back(this);
 
-    result._backward = [this, exp](const std::vector<double>& outGrad) {
-        for (size_t i = 0; i < this->grad.size(); i++) {
-            double derivative = exp * std::pow(this->data[i], exp-1.0);
-            this->grad[i] += outGrad[i] * derivative;
+    result._backward = [this, exp](const double* outGrad) {
+        for (size_t i = 0; i < size; i++) {
+            double derivative = exp * std::pow(data[i], exp-1.0);
+            grad[i] += outGrad[i] * derivative;
         }
     };
 
@@ -368,15 +387,15 @@ Tensor Tensor::pow(const double exp) const {
 Tensor Tensor::sum() const {
     Tensor result({1});
     double total = 0.0;
-    for (double i: this->data)
-        total += i;
+    for (size_t i = 0; i < size; i++)
+        total += data[i];
     result.data[0] = total;
 
     result.prev.push_back(this);
 
-    result._backward = [this](const std::vector<double>& outGrad) {
-        for (size_t i = 0; i < this->grad.size(); i++)
-            this->grad[i] += 1.0 * outGrad[0];
+    result._backward = [this](const double* outGrad) {
+        for (size_t i = 0; i < size; i++)
+            grad[i] += 1.0 * outGrad[0];
     };
 
     result._op = "sum";
@@ -384,18 +403,18 @@ Tensor Tensor::sum() const {
 }
 
 Tensor Tensor::relu() const {
-    Tensor result(this->shape);
+    Tensor result(shape);
 
-    for (size_t i = 0; i < this->data.size(); i++) {
-        result.data[i] = (this->data[i] > 0.0) ? this->data[i] : 0.0;
+    for (size_t i = 0; i < size; i++) {
+        result.data[i] = (data[i] > 0.0) ? data[i] : 0.0;
     }
 
     result.prev.push_back(this);
 
-    result._backward = [this](const std::vector<double>& outGrad) {
-        for (size_t i = 0; i < this->grad.size(); i++) {
-            double localDer = (this->data[i] > 0.0) ? 1.0 : 0.0;
-            this->grad[i] += outGrad[i] * localDer;
+    result._backward = [this](const double* outGrad) {
+        for (size_t i = 0; i < size; i++) {
+            double localDer = (data[i] > 0.0) ? 1.0 : 0.0;
+            grad[i] += outGrad[i] * localDer;
         }
     };
     

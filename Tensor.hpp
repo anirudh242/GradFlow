@@ -5,12 +5,13 @@
 
 class Tensor {
 public:
-    std::vector<double> data;
-    mutable std::vector<double> grad;
+    size_t size;
+    double* data;
+    double* grad;
     std::vector<int> shape;
     std::vector<int> strides;
     std::vector<const Tensor*> prev;
-    std::function<void(const std::vector<double>&)> _backward;
+    std::function<void(const double*)> _backward;
     std::string _op;
 
     Tensor(const std::vector<int>& shape);
