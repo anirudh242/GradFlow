@@ -4,52 +4,46 @@
 #include "Arena.hpp"
 
 int main() {
-    std::cout << "--- INITIALIZING TENSORS IN ARENA ---\n";
+    std::cout << "--- INITIALIZING TWO-ARENA TEST ---\n";
     
-    // 1. Prediction: [3.0, 4.0]
     std::vector<int> shape = {2};
     std::vector<int> strides = {1};
-    Tensor Pred(std::vector<double>{3.0, 4.0}, shape, strides);
 
-    // 2. Target: [10.0, 10.0]
-    Tensor Target(std::vector<double>{10.0, 10.0}, shape, strides);
+    // 1. PERSISTENT PARAMETERS (is_param = true)
+    // These live in paramArena and should survive the epoch wipe.
+    Tensor Weights(std::vector<double>{0.5, -0.5}, shape, strides, true);
+    Tensor Bias(std::vector<double>{0.1, 0.1}, shape, strides, true);
 
-    // --- FORWARD PASS ---
-    Tensor Error = Pred - Target;               // [-7.0, -6.0]
-    Tensor SqError = Error.pow(2.0);            // [49.0, 36.0]
-    Tensor SumError = SqError.sum();            // [85.0]
-    
-    // Scale by 1/N to get the Mean
-    double N = 2.0;
-    Tensor Loss({1});
-    Loss.data[0] = SumError.data[0] / N;        // 85.0 / 2 = 42.5
-    Loss._op = "MSE";
-    
-    // Wire up the Loss to the graph
-    Loss.prev.push_back(&SumError);
-    Tensor* sum_ptr = &SumError;
-    Loss._backward = [N, sum_ptr](const double* outGrad) {
-        sum_ptr->grad[0] += (1.0 / N) * outGrad[0];
-    };
+    // 2. EPHEMERAL DATA (is_param = false, which is default)
+    // These live in globalArena and wipe every epoch.
+    Tensor Input(std::vector<double>{2.0, 4.0}, shape, strides);
+    Tensor Target(std::vector<double>{1.0, 0.0}, shape, strides);
 
-    std::cout << "Loss: " << Loss.data[0] << " (Expected: 42.5)\n\n";
+    std::cout << "\n--- MEMORY BEFORE MATH ---\n";
+    std::cout << "Param Arena: "; paramArena.print_usage();
+    std::cout << "Global Arena: "; globalArena.print_usage();
 
-    // --- BACKWARD PASS ---
-    std::cout << "--- BACKWARD PASS ---\n";
-    Loss.grad[0] = 1.0; // Seed the root gradient!
+    // 3. FORWARD PASS
+    // All intermediate math nodes automatically allocate in globalArena
+    Tensor Pred = Input + Weights; // Simulated layer
+    Tensor Error = Pred - Target;
+    Tensor SqError = Error.pow(2.0);
+    Tensor Loss = SqError.sum();
+
+    // 4. BACKWARD PASS
+    Loss.grad[0] = 1.0; // Seed the root
     Loss.backward();
 
-    std::cout << "Gradient of Pred[0]: " << Pred.grad[0] << " (Expected: -7)\n";
-    std::cout << "Gradient of Pred[1]: " << Pred.grad[1] << " (Expected: -6)\n\n";
+    std::cout << "\n--- MEMORY AFTER BACKWARD PASS ---\n";
+    std::cout << "Param Arena (Should only hold W and B): "; paramArena.print_usage();
+    std::cout << "Global Arena (Should hold all intermediate math): "; globalArena.print_usage();
 
-    // --- MEMORY SPEED TEST ---
-    std::cout << "--- ARENA MEMORY CHECK ---\n";
-    globalArena.print_usage(); // Should show some memory used by the intermediate nodes
-    
-    std::cout << "Triggering instant Epoch reset...\n";
+    // 5. THE EPOCH WIPE
+    std::cout << "\n--- TRIGGERING EPOCH RESET ---\n";
     globalArena.reset();
-    
-    globalArena.print_usage(); // Should show exactly 0 doubles used
+
+    std::cout << "Param Arena (Must NOT be 0): "; paramArena.print_usage();
+    std::cout << "Global Arena (Must be exactly 0): "; globalArena.print_usage();
 
     return 0;
 }

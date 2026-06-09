@@ -1,6 +1,7 @@
 #include "Arena.hpp"
 
 Arena globalArena(10000000);
+Arena paramArena(10000000);
 
 Arena::Arena(size_t maxElements = 10000000) : capacity(maxElements), offset(0), memory(std::make_unique<double[]>(maxElements)){}
 

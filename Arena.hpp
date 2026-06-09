@@ -18,3 +18,4 @@ class Arena {
 };
 
 extern Arena globalArena;
+extern Arena paramArena;

@@ -30,14 +30,20 @@ std::vector<int> broadcastShapes(const std::vector<int>& shapeA, const std::vect
     return outShape;
 }
 
-Tensor::Tensor(const std::vector<int>& s) : shape(s) {
+Tensor::Tensor(const std::vector<int>& s, bool isParam) : shape(s) {
     size_t dataSize = 1;
     for (int i : shape) {
         dataSize *= i;  
     }
     size = dataSize;
-    data = globalArena.allocate(size);
-    grad = globalArena.allocate(size);
+
+    if (isParam) {
+        data = paramArena.allocate(size);
+        grad = paramArena.allocate(size);
+    } else {
+        data = globalArena.allocate(size);
+        grad = globalArena.allocate(size);
+    }
 
     for (size_t i = 0; i < size; i++) {
         data[i] = 0.0;
@@ -55,11 +61,17 @@ Tensor::Tensor(const std::vector<int>& s) : shape(s) {
 Tensor::Tensor(
     const std::vector<double> input_data, 
     const std::vector<int> shape, 
-    const std::vector<int> strides
+    const std::vector<int> strides,
+    bool isParam
 ) : shape(shape), strides(strides) {
     size = input_data.size();
-    data = globalArena.allocate(size);
-    grad = globalArena.allocate(size);
+    if (isParam) {
+        data = paramArena.allocate(size);
+        grad = paramArena.allocate(size);
+    } else {
+        data = globalArena.allocate(size);
+        grad = globalArena.allocate(size);
+    }
     for (size_t i = 0; i < size; i++) {
         data[i] = input_data[i];
         grad[i] = 0.0;

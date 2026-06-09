@@ -12,6 +12,8 @@ add_executable(main
     graph.cpp
     Tensor.cpp
     Arena.cpp
+    Optimizer.cpp
+    Loss.cpp
 )
 
 add_custom_target(run

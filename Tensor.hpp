@@ -14,8 +14,8 @@ public:
     std::function<void(const double*)> _backward;
     std::string _op;
 
-    Tensor(const std::vector<int>& shape);
-    Tensor(const std::vector<double> data, const std::vector<int> shape, const std::vector<int> strides);
+    Tensor(const std::vector<int>& shape, bool isParam = false);
+    Tensor(const std::vector<double> data, const std::vector<int> shape, const std::vector<int> strides, bool isParam= false);
 
     double& at(const std::vector<int>& indices);
     Tensor broadcastTo(const std::vector<int>& targetShape) const;
