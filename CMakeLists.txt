@@ -14,11 +14,14 @@ add_executable(main
     Arena.cpp
     Optimizer.cpp
     Loss.cpp
+    Linear.cpp
 )
 
+# Custom target to compile, run, build the graph, and open it
 add_custom_target(run
     COMMAND $<TARGET_FILE:main>
     COMMAND dot -Tsvg forward_pass.dot -o graph.svg
-    COMMAND xdg-open graph.svg
+    # Cross-platform open command that fails silently if the OS doesn't support one of them
+    COMMAND xdg-open graph.svg || open graph.svg || start graph.svg || true
     DEPENDS main
 )

@@ -30,7 +30,7 @@ std::vector<int> broadcastShapes(const std::vector<int>& shapeA, const std::vect
     return outShape;
 }
 
-Tensor::Tensor(const std::vector<int>& s, bool isParam) : shape(s) {
+Tensor::Tensor(const std::vector<int>& shape, bool isParam) : shape(shape) {
     size_t dataSize = 1;
     for (int i : shape) {
         dataSize *= i;  
