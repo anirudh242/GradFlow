@@ -117,6 +117,7 @@ void Tensor::zeroGrad() {
     }
 }
 
+// builds topo graph and calls _backward() for all nodes
 void Tensor::backward() {
     std::vector<const Tensor*> topo;
     std::set<const Tensor*> visited;

@@ -1,1 +1,13 @@
-/build
+# Build artifacts
+build/
+bin/
+*.o
+
+# Visualizer outputs
+*.dot
+*.svg
+*.png
+
+# IDE folders
+.vscode/
+.idea/

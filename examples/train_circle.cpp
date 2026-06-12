@@ -1,14 +1,16 @@
 #include <iostream>
 #include <vector>
 #include <random>
+#include <iomanip>
 #include "Tensor.hpp"
 #include "Arena.hpp"
 #include "Linear.hpp"
 #include "Loss.hpp"
 #include "Optimizer.hpp"
+#include "graph.hpp"
 
 int main() {
-    std::cout << "--- GENERATING CIRCLE DATASET ---\n";
+    std::cout << "GENERATING CIRCLE DATASET\n";
     
     int numSamples = 200;
     std::vector<double> xData(numSamples * 2);
@@ -33,6 +35,7 @@ int main() {
     std::vector<int> yStrides = {1, 1};
     Tensor Y(yData, yShape, yStrides, true); 
 
+    // MODEL ARCHITECTURE
     Linear layer1(2, 16);
     Linear layer2(16, 16);
     Linear layer3(16, 1);
@@ -55,12 +58,17 @@ int main() {
     Tensor test_pred = layer3(test_a2);
     Tensor test_loss = criterion(test_pred, Y);
     
-    
+    test_loss.grad[0] = 1.0;
+    test_loss.backward(); 
+    draw_graph(&test_loss, "forward_pass.dot");
     globalArena.reset(); 
 
-    std::cout << "--- STARTING DEEP TRAINING ---\n";
+    std::cout << "STARTING DEEP TRAINING\n";
 
-    for (int epoch = 1; epoch <= 4000; epoch++) {
+    std::cout << std::fixed << std::setprecision(4);
+    
+    // TRAINING LOOP
+    for (int epoch = 1; epoch <= 10000; epoch++) {
         Tensor h1 = layer1(X);
         Tensor a1 = h1.relu();
         Tensor h2 = layer2(a1);
@@ -79,6 +87,17 @@ int main() {
         if (epoch % 500 == 0) {
             std::cout << "Epoch " << epoch << " | Loss: " << loss.data[0] << "\n";
         }
+    }
+
+    std::cout << "\nRANDOM SAMPLE VERIFICATION\n";
+    Tensor h1 = layer1(X);
+    Tensor a1 = h1.relu();
+    Tensor h2 = layer2(a1);
+    Tensor a2 = h2.relu();
+    Tensor finalPred = layer3(a2);
+    
+    for (int i = 0; i < 10; i++) {
+        std::cout << "Input: [" << X.data[i*2] << ", " << X.data[i*2+1] << "] -> " << "Pred: " << finalPred.data[i] << " (Target: " << Y.data[i] << ")\n";
     }
 
     return 0;

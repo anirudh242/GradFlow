@@ -3,6 +3,7 @@
 MSELoss::MSELoss() : error({1}), sqError({1}), sumError({1}) {}
 
 Tensor MSELoss::operator()(const Tensor& pred, const Tensor& target) {
+    // MSE = (1/N)*sum(yi'-yi)^2
     error = pred - target;
     sqError = error.pow(2.0);
     sumError = sqError.sum();
