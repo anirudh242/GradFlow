@@ -4,6 +4,8 @@
 #include <stdexcept>
 #include <set>
 #include <cmath>
+#include <immintrin.h>
+#include <omp.h>
 
 // Helper to find broadcasted shape of 2 shapes
 std::vector<int> broadcastShapes(const std::vector<int>& shapeA, const std::vector<int>& shapeB) {
@@ -270,31 +272,91 @@ Tensor Tensor::operator*(const Tensor& other) const {
         currBatchStride *= finalBatchShape[i];
     }
 
-    std::vector<int> batchcoords(finalBatchShape.size(), 0);
+    int strideA_row = Ab.strides[Ab.strides.size() - 2];
+    int strideA_col = Ab.strides[Ab.strides.size() - 1];
+    
+    int strideB_row = Bb.strides[Bb.strides.size() - 2];
+    int strideB_col = Bb.strides[Bb.strides.size() - 1];
+
+    int strideRes_row = result.strides[result.strides.size() - 2];
+    int strideRes_col = result.strides[result.strides.size() - 1];
+
+    const double* ptrA = Ab.data;
+    const double* ptrB = Bb.data;
+    double* ptrRes = result.data;
+
+    constexpr int BLOCK_SIZE = 32;
+
     for (int b = 0; b < totalBatches; b++) {
-        
+        size_t batchOffsetA = 0;
+        size_t batchOffsetB = 0;
+        size_t batchOffsetRes = 0;
+
         for (size_t i = 0; i < finalBatchShape.size(); i++) {
-            batchcoords[i] = (b / batchStrides[i]) % finalBatchShape[i];
+            int coord = (b / batchStrides[i]) % finalBatchShape[i];
+            batchOffsetA += coord * Ab.strides[i];
+            batchOffsetB += coord * Bb.strides[i];
+            batchOffsetRes += coord * result.strides[i];
         }
+
         for (int r = 0; r < rowsA; r++) {
             for (int c = 0; c < colsB; c++) {
-                double sum = 0.0;
-                for (int k = 0; k < colsA; k++) {
-                    std::vector<int> coordA = batchcoords;
-                    coordA.push_back(r);
-                    coordA.push_back(k);
+                size_t idxRes = batchOffsetRes + r * strideRes_row + c * strideRes_col;
+                ptrRes[idxRes] = 0.0;
+            }
+        }
 
-                    std::vector<int> coordB = batchcoords;
-                    coordB.push_back(k);
-                    coordB.push_back(c);
+        // outer loops move 64x64 tiles; br, bk, bc = boundaries of curr tile
+        // using openmp to use all 16 cores (multithreading)
+        #pragma omp parallel for
+        for (int br = 0; br < rowsA; br += BLOCK_SIZE) {
+            for (int bk = 0; bk < colsA; bk += BLOCK_SIZE) {
+                for (int bc = 0; bc < colsB; bc += BLOCK_SIZE) {
+                    // prevent index out of bounds
+                    int r_end = std::min(br + BLOCK_SIZE, rowsA);
+                    int k_end = std::min(bk + BLOCK_SIZE, colsA);
+                    int c_end = std::min(bc + BLOCK_SIZE, colsB);
 
-                    sum += Ab.at(coordA) * Bb.at(coordB);
+                    // matmul loops
+                    for (int r = br; r < r_end; r++) {
+                        for (int k = bk; k < k_end; k++) {
+                            size_t idxA = batchOffsetA + r * strideA_row + k * strideA_col;
+                            double a_val = ptrA[idxA]; 
+                            
+                            int c = bc; 
+                            
+                            // avx2 path
+                            // if mems not flat then (reading a col over a row) then avx will grab the wrong data
+                            if (strideB_col == 1 && strideRes_col == 1) {
+                                // Broadcast a_val to [a, a, a, a]
+                                __m256d vec_a = _mm256_set1_pd(a_val); // copy a_val 4 times into 256 bit register
+                                
+                                for (; c <= c_end - 4; c += 4) {
+                                    size_t idxB = batchOffsetB + k * strideB_row + c;
+                                    size_t idxRes = batchOffsetRes + r * strideRes_row + c;
+                                    
+                                    __m256d vec_b = _mm256_loadu_pd(&ptrB[idxB]); // load from mem into 256 bit register
+                                    __m256d vec_res = _mm256_loadu_pd(&ptrRes[idxRes]);
+                                    
+                                    __m256d vec_mul = _mm256_mul_pd(vec_a, vec_b); // multiplication with simd
+                                    vec_res = _mm256_add_pd(vec_res, vec_mul);
+                                    
+                                    _mm256_storeu_pd(&ptrRes[idxRes], vec_res); // back to ram
+                                }
+                            }
+                            
+                            // scalar tail
+                            // avx2 works in batches of 4 so if cols % 4 != 0 then there will be leftover cols.
+                            // leftover cols are processed individually with normal multiplication 
+                            for (; c < c_end; c++) {
+                                size_t idxB = batchOffsetB + k * strideB_row + c * strideB_col;
+                                size_t idxRes = batchOffsetRes + r * strideRes_row + c * strideRes_col;
+                                
+                                ptrRes[idxRes] += a_val * ptrB[idxB];
+                            }
+                        }
+                    }
                 }
-
-                std::vector<int> coordresult = batchcoords;
-                coordresult.push_back(r);
-                coordresult.push_back(c);
-                result.at(coordresult) = sum;
             }
         }
     }

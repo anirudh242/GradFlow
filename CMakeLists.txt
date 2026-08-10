@@ -7,7 +7,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Aggressive compiler optimizations (-O3 and -march=native) for maximum speed
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -march=native -Wall -Wextra")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -march=native -Wall -Wextra -fopenmp")
 
 # 1. THE PUBLIC API
 # Tell CMake where to look when a file says #include "Tensor.hpp"
@@ -47,3 +47,21 @@ add_custom_target(run_circle
     COMMAND xdg-open graph.svg || open graph.svg || start graph.svg || true
     DEPENDS train_circle
 )
+
+# --- BENCHMARKING SUITE ---
+include(FetchContent)
+
+# Prevent Google Benchmark from pulling in GoogleTest and bloating your build
+set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "Disable testing" FORCE) 
+
+FetchContent_Declare(
+  googlebenchmark
+  GIT_REPOSITORY https://github.com/google/benchmark.git
+  GIT_TAG main 
+)
+FetchContent_MakeAvailable(googlebenchmark)
+
+# Compile the benchmark executable
+add_executable(tensor_bench bench/tensor_bench.cpp)
+# Link against your 'engine' static library and benchmark_main
+target_link_libraries(tensor_bench PRIVATE engine benchmark::benchmark_main)
