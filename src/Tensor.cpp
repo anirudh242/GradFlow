@@ -182,30 +182,40 @@ Tensor Tensor::operator+(const Tensor& other) const {
     Tensor broadB = other.broadcastTo(commonShape);
 
     Tensor result(commonShape);
-
-    size_t total = 1;
-    for (int dim : commonShape)
-        total *= dim;
     
-    std::vector<int> curr(commonShape.size(), 0);
+    size_t res_size = result.size;
+
+    // check if broadcasting occured 
+    bool isAbroad = (this->size != res_size);
+    bool isBbroad = (other.size != res_size);
     
-    for (size_t flati = 0; flati < total; flati++) {
-        for (size_t j = 0; j < commonShape.size(); j++) {
-            curr[j] = (flati / result.strides[j]) % commonShape[j];    
-        }
-
-        result.at(curr) = broadA.at(curr) + broadB.at(curr);
-    }
-
-    result.prev.push_back(this);
-    result.prev.push_back(&other);
-
     std::vector<int> resultStrides = result.strides;
     std::vector<int> broadAStrides = broadA.strides;
     std::vector<int> broadBStrides= broadB.strides;
-    size_t res_size = result.size;
 
-    result._backward = [this, &other, commonShape, resultStrides, broadAStrides, broadBStrides, res_size](const double* outGrad) {
+    if (!isAbroad && !isBbroad) {
+        const double* ptrA = this->data;
+        const double* ptrB = other.data;
+        double* ptrRes = result.data;
+        
+        long long total_len = res_size;
+        long long aligned_len = total_len - (total_len % 4);
+
+        #pragma omp parallel for
+        for (long long i = 0; i < aligned_len; i += 4) {
+            __m256d vecA = _mm256_loadu_pd(&ptrA[i]);
+            __m256d vecB = _mm256_loadu_pd(&ptrB[i]);
+            
+            __m256d vecRes = _mm256_add_pd(vecA, vecB);
+            
+            _mm256_storeu_pd(&ptrRes[i], vecRes);
+        }
+
+        // scalar tail
+        for (long long i = aligned_len; i < total_len; i++) {
+            ptrRes[i] = ptrA[i] + ptrB[i];
+        }
+    } else {
         for (size_t flati = 0; flati < res_size; flati++) {
             size_t flatA = 0;
             size_t flatB = 0;
@@ -216,8 +226,58 @@ Tensor Tensor::operator+(const Tensor& other) const {
                 flatB += axis * broadBStrides[j];
             }
             
-            grad[flatA] += 1.0 * outGrad[flati];
-            other.grad[flatB] += 1.0 * outGrad[flati];
+            result.data[flati] = broadA.data[flatA] + broadB.data[flatB];
+        }
+    }
+
+    result.prev.push_back(this);
+    result.prev.push_back(&other);
+
+    double* grad_a = this->grad;
+    double* grad_b = other.grad;
+
+    result._backward = [grad_a, grad_b, isAbroad, isBbroad, 
+                        commonShape, resultStrides, broadAStrides, broadBStrides, res_size](const double* outGrad) {
+        // if no broadcasting occured we can directly map the grads
+        if (!isAbroad && !isBbroad) {
+            long long totalLen = res_size;
+            long long alignedLen = totalLen - (totalLen % 4);
+            
+            #pragma omp parallel for
+            for (long long i = 0; i < alignedLen; i += 4) {
+                __m256d vecOut = _mm256_loadu_pd(&outGrad[i]);
+                
+                // a += incoming gradient
+                __m256d vecGradA = _mm256_loadu_pd(&grad_a[i]);
+                _mm256_storeu_pd(&grad_a[i], _mm256_add_pd(vecGradA, vecOut));
+                
+                // b += incoming gradient
+                __m256d vecGradB = _mm256_loadu_pd(&grad_b[i]);
+                _mm256_storeu_pd(&grad_b[i], _mm256_add_pd(vecGradB, vecOut));
+            }
+            
+            // scalar tail 
+            for (long long i = alignedLen; i < totalLen; i++) {
+                grad_a[i] += outGrad[i];
+                grad_b[i] += outGrad[i];
+            }
+            return; 
+        }
+        
+        // cannot use openmp if broadcasted due to thread race conditions
+        // multiple grads will go back to same idx which will corrupt the maths
+        for (size_t flati = 0; flati < res_size; flati++) {
+            size_t flatA = 0;
+            size_t flatB = 0;
+
+            for (size_t j = 0; j < commonShape.size(); j++) {
+                int axis = (flati / resultStrides[j]) % commonShape[j];
+                flatA += axis * broadAStrides[j];
+                flatB += axis * broadBStrides[j];
+            }
+            
+            grad_a[flatA] += outGrad[flati];
+            grad_b[flatB] += outGrad[flati];
         }
     };
 
@@ -368,21 +428,31 @@ Tensor Tensor::operator*(const Tensor& other) const {
     result.prev.push_back(this);
     result.prev.push_back(&other);
 
-    result._backward = [this, &other, resShape, resStrides, res_size](const double* outGrad) {
-        std::vector<double> outGradVec(outGrad, outGrad + res_size);
-        Tensor dC(outGradVec, resShape, resStrides);
-        Tensor At = transpose();
-        Tensor Bt = other.transpose();
+    const Tensor* self = this;
+    const Tensor* other_ptr = &other;
+
+    result._backward = [self, other_ptr, resShape, resStrides, res_size](const double* outGrad) {
+        Tensor dC(resShape); 
+        
+        #pragma omp parallel for
+        for(size_t i = 0; i < res_size; i++) {
+            dC.data[i] = outGrad[i];
+        }
+
+        Tensor At = self->transpose();
+        Tensor Bt = other_ptr->transpose();
         Tensor dA = dC * Bt;
         Tensor dB = At * dC;
-        for (size_t i = 0; i < size; i++) {
-            grad[i] += dA.data[i];
-        }
-        for (size_t i = 0; i < other.size; i++)
-        {
-            other.grad[i] += dB.data[i];
+
+        #pragma omp parallel for
+        for (size_t i = 0; i < self->size; i++) {
+            self->grad[i] += dA.data[i];
         }
         
+        #pragma omp parallel for
+        for (size_t i = 0; i < other_ptr->size; i++) {
+            other_ptr->grad[i] += dB.data[i];
+        }
     };
 
     result._op = "*";
@@ -391,35 +461,46 @@ Tensor Tensor::operator*(const Tensor& other) const {
 }
 
 Tensor Tensor::operator-(const Tensor& other) const {
+    // broadcasting
     std::vector<int> commonShape = broadcastShapes(shape, other.shape);
     Tensor broadA = broadcastTo(commonShape);
     Tensor broadB = other.broadcastTo(commonShape);
 
     Tensor result(commonShape);
-
-    size_t total = 1;
-    for (int dim : commonShape)
-        total *= dim;
     
-    std::vector<int> curr(commonShape.size(), 0);
+    size_t res_size = result.size;
+
+    // check if broadcasting occured 
+    bool isAbroad = (this->size != res_size);
+    bool isBbroad = (other.size != res_size);
     
-    for (size_t flati = 0; flati < total; flati++) {
-        for (size_t j = 0; j < commonShape.size(); j++) {
-            curr[j] = (flati / result.strides[j]) % commonShape[j];    
-        }
-
-        result.at(curr) = broadA.at(curr) - broadB.at(curr);
-    }
-
-    result.prev.push_back(this);
-    result.prev.push_back(&other);
-
     std::vector<int> resultStrides = result.strides;
     std::vector<int> broadAStrides = broadA.strides;
     std::vector<int> broadBStrides= broadB.strides;
-    size_t res_size = result.size;
 
-    result._backward = [this, &other, commonShape, resultStrides, broadAStrides, broadBStrides, res_size](const double* outGrad) {
+    if (!isAbroad && !isBbroad) {
+        const double* ptrA = this->data;
+        const double* ptrB = other.data;
+        double* ptrRes = result.data;
+        
+        long long total_len = res_size;
+        long long aligned_len = total_len - (total_len % 4);
+
+        #pragma omp parallel for
+        for (long long i = 0; i < aligned_len; i += 4) {
+            __m256d vecA = _mm256_loadu_pd(&ptrA[i]);
+            __m256d vecB = _mm256_loadu_pd(&ptrB[i]);
+            
+            __m256d vecRes = _mm256_sub_pd(vecA, vecB);
+            
+            _mm256_storeu_pd(&ptrRes[i], vecRes);
+        }
+
+        // scalar tail
+        for (long long i = aligned_len; i < total_len; i++) {
+            ptrRes[i] = ptrA[i] + ptrB[i];
+        }
+    } else {
         for (size_t flati = 0; flati < res_size; flati++) {
             size_t flatA = 0;
             size_t flatB = 0;
@@ -430,8 +511,59 @@ Tensor Tensor::operator-(const Tensor& other) const {
                 flatB += axis * broadBStrides[j];
             }
             
-            grad[flatA] += 1.0 * outGrad[flati];
-            other.grad[flatB] -= 1.0 * outGrad[flati];
+            result.data[flati] = broadA.data[flatA] - broadB.data[flatB];
+        }
+    }
+
+    result.prev.push_back(this);
+    result.prev.push_back(&other);
+
+    double* grad_a = this->grad;
+    double* grad_b = other.grad;
+
+    result._backward = [grad_a, grad_b, isAbroad, isBbroad, 
+                        commonShape, resultStrides, broadAStrides, broadBStrides, res_size](const double* outGrad) {
+        
+        // if no broadcasting occured we can directly map the grads
+        if (!isAbroad && !isBbroad) {
+            long long totalLen = res_size;
+            long long alignedLen = totalLen - (totalLen % 4);
+            
+            #pragma omp parallel for
+            for (long long i = 0; i < alignedLen; i += 4) {
+                __m256d vecOut = _mm256_loadu_pd(&outGrad[i]);
+                
+                // a += incoming gradient
+                __m256d vecGradA = _mm256_loadu_pd(&grad_a[i]);
+                _mm256_storeu_pd(&grad_a[i], _mm256_add_pd(vecGradA, vecOut));
+                
+                // b -= incoming gradient
+                __m256d vecGradB = _mm256_loadu_pd(&grad_b[i]);
+                _mm256_storeu_pd(&grad_b[i], _mm256_sub_pd(vecGradB, vecOut));
+            }
+            
+            // scalar tail 
+            for (long long i = alignedLen; i < totalLen; i++) {
+                grad_a[i] += outGrad[i];
+                grad_b[i] -= outGrad[i];
+            }
+            return; 
+        }
+        
+        // cannot use openmp if broadcasted due to thread race conditions
+        // multiple grads will go back to same idx which will corrupt the maths
+        for (size_t flati = 0; flati < res_size; flati++) {
+            size_t flatA = 0;
+            size_t flatB = 0;
+
+            for (size_t j = 0; j < commonShape.size(); j++) {
+                int axis = (flati / resultStrides[j]) % commonShape[j];
+                flatA += axis * broadAStrides[j];
+                flatB += axis * broadBStrides[j];
+            }
+            
+            grad_a[flatA] += outGrad[flati];
+            grad_b[flatB] -= outGrad[flati];
         }
     };
 
@@ -448,10 +580,14 @@ Tensor Tensor::pow(const double exp) const {
     }
     result.prev.push_back(this);
 
-    result._backward = [this, exp](const double* outGrad) {
-        for (size_t i = 0; i < size; i++) {
-            double derivative = exp * std::pow(data[i], exp-1.0);
-            grad[i] += outGrad[i] * derivative;
+    double* gradIn = this->grad;
+    const double* dataIn = this->data;
+    size_t sz = this->size;
+
+    result._backward = [gradIn, dataIn, sz, exp](const double* outGrad) {
+        for (size_t i = 0; i < sz; i++) {
+            double derivative = exp * std::pow(dataIn[i], exp-1.0);
+            gradIn[i] += outGrad[i] * derivative;
         }
     };
 
@@ -468,9 +604,11 @@ Tensor Tensor::sum() const {
 
     result.prev.push_back(this);
 
-    result._backward = [this](const double* outGrad) {
-        for (size_t i = 0; i < size; i++)
-            grad[i] += 1.0 * outGrad[0];
+    double* gradIn = this->grad;
+    size_t sz = this->size;
+    result._backward = [gradIn, sz](const double* outGrad) {
+        for (size_t i = 0; i < sz; i++)
+            gradIn[i] += 1.0 * outGrad[0];
     };
 
     result._op = "sum";
@@ -486,10 +624,14 @@ Tensor Tensor::relu() const {
 
     result.prev.push_back(this);
 
-    result._backward = [this](const double* outGrad) {
-        for (size_t i = 0; i < size; i++) {
-            double localDer = (data[i] > 0.0) ? 1.0 : 0.0;
-            grad[i] += outGrad[i] * localDer;
+    double* gradIn = this->grad;
+    const double* dataIn = this->data;
+    size_t sz = this->size;
+
+    result._backward = [gradIn, dataIn, sz](const double* outGrad) {
+        for (size_t i = 0; i < sz; i++) {
+            double localDer = (dataIn[i] > 0.0) ? 1.0 : 0.0;
+            gradIn[i] += outGrad[i] * localDer;
         }
     };
     

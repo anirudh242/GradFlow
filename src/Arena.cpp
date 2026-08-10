@@ -2,8 +2,8 @@
 #include <iostream>
 #include <stdexcept>
 
-Arena globalArena(10000000);
-Arena paramArena(10000000);
+Arena globalArena(100000000);
+Arena paramArena(100000000);
 
 Arena::Arena(size_t maxElements)
     : capacity(maxElements), offset(0),
