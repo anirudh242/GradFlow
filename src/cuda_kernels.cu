@@ -3,7 +3,7 @@
 
 #define TILE_SIZE 16 
 
-__global__ void addKernel(const double* A, const double* B, double* C, size_t N) {
+__global__ void addKernel(const float* A, const float* B, float* C, size_t N) {
     size_t i = blockIdx.x * blockDim.x + threadIdx.x;
 
     if (i < N) { // prevent out of bounds
@@ -11,12 +11,12 @@ __global__ void addKernel(const double* A, const double* B, double* C, size_t N)
     }
 }
 
-__global__ void matMulKernel(const double* A, const double* B, double* C, size_t M, size_t K, size_t N) { // m rows, n cols, k inner dim
+__global__ void matMulKernel(const float* A, const float* B, float* C, size_t M, size_t K, size_t N) { // m rows, n cols, k inner dim
     size_t row = blockIdx.y * blockDim.y + threadIdx.y; 
     size_t col = blockIdx.x * blockDim.x + threadIdx.x;
 
     if (row < M && col < N) {
-        double sum = 0.0;
+        float sum = 0.0;
         for (int i = 0; i < K; i++) {
             sum += A[row * K + i] * B[i * N + col];
         }
@@ -24,9 +24,9 @@ __global__ void matMulKernel(const double* A, const double* B, double* C, size_t
     } 
 }
 
-__global__ void tiledMatmulKernel(const double* A, const double* B, double* C, size_t M, size_t K, size_t N) {
-    __shared__ double sA[TILE_SIZE][TILE_SIZE];
-    __shared__ double sB[TILE_SIZE][TILE_SIZE];
+__global__ void tiledMatmulKernel(const float* A, const float* B, float* C, size_t M, size_t K, size_t N) {
+    __shared__ float sA[TILE_SIZE][TILE_SIZE];
+    __shared__ float sB[TILE_SIZE][TILE_SIZE];
     
     int tx = threadIdx.x; // col 
     int ty = threadIdx.y; // row 
@@ -34,7 +34,7 @@ __global__ void tiledMatmulKernel(const double* A, const double* B, double* C, s
     size_t row = blockIdx.y * TILE_SIZE + ty;
     size_t col = blockIdx.x * TILE_SIZE + tx;
 
-    double sum = 0.0;
+    float sum = 0.0;
 
     for (size_t t = 0; t < (K + TILE_SIZE - 1) / TILE_SIZE; t++) {
         // we use t as a multiplier to slide through chunks of 16 (TILE_SIZE) through the matrix
@@ -62,11 +62,11 @@ __global__ void tiledMatmulKernel(const double* A, const double* B, double* C, s
 }
 
 extern "C" {
-    void launchAddKernel(const double* A, const double* B, double* C, size_t N) {
-        size_t sz = N * sizeof(double);
+    void launchAddKernel(const float* A, const float* B, float* C, size_t N) {
+        size_t sz = N * sizeof(float);
 
         // allocate vram
-        double *d_A, *d_B, *d_C;
+        float *d_A, *d_B, *d_C;
         cudaMalloc((void**)&d_A, sz);
         cudaMalloc((void**)&d_B, sz);
         cudaMalloc((void**)&d_C, sz);
@@ -91,11 +91,11 @@ extern "C" {
         cudaFree(d_C);
     }
 
-    void launchMatmulKernel(const double* A, const double* B, double* C, size_t M, size_t K, size_t N) {
-        size_t sza = M * K * sizeof(double);
-        size_t szb = N * K * sizeof(double);
-        size_t szc = N * M * sizeof(double);
-        double *d_A, *d_B, *d_C;
+    void launchMatmulKernel(const float* A, const float* B, float* C, size_t M, size_t K, size_t N) {
+        size_t sza = M * K * sizeof(float);
+        size_t szb = N * K * sizeof(float);
+        size_t szc = N * M * sizeof(float);
+        float *d_A, *d_B, *d_C;
 
         cudaMalloc((void**)&d_A, sza);
         cudaMalloc((void**)&d_B, szb);
@@ -117,11 +117,11 @@ extern "C" {
         cudaFree(d_C);
     }
 
-    void launchTiledMatmulKernel(const double* A, const double* B, double* C, size_t M, size_t K, size_t N) {
-        size_t sza = M * K * sizeof(double);
-        size_t szb = N * K * sizeof(double);
-        size_t szc = N * M * sizeof(double);
-        double *d_A, *d_B, *d_C;
+    void launchTiledMatmulKernel(const float* A, const float* B, float* C, size_t M, size_t K, size_t N) {
+        size_t sza = M * K * sizeof(float);
+        size_t szb = N * K * sizeof(float);
+        size_t szc = N * M * sizeof(float);
+        float *d_A, *d_B, *d_C;
 
         cudaMalloc((void**)&d_A, sza);
         cudaMalloc((void**)&d_B, szb);
@@ -143,17 +143,17 @@ extern "C" {
         cudaFree(d_C);
     }
 
-    double* allocateVram(size_t bytes) {
-        double* ptr = nullptr;
+    float* allocateVram(size_t bytes) {
+        float* ptr = nullptr;
         cudaMalloc((void**)&ptr, bytes);
         return ptr;
     }
 
-    void freeVram(double* ptr) {
+    void freeVram(float* ptr) {
         cudaFree(ptr);
     }
 
-    void copyMemory(double* dst, const double* src, size_t bytes, bool toGpu) {
+    void copyMemory(float* dst, const float* src, size_t bytes, bool toGpu) {
         if (toGpu) {
             cudaMemcpy(dst, src, bytes, cudaMemcpyHostToDevice);
         } else {
@@ -161,7 +161,7 @@ extern "C" {
         }
     }
 
-    void fillZerosVram(double* ptr, size_t bytes) {
+    void fillZerosVram(float* ptr, size_t bytes) {
         cudaMemset(ptr, 0, bytes);
     }
 }

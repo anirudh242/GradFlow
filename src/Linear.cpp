@@ -8,8 +8,8 @@ Linear::Linear(int inFeatures, int outFeatures) :
     matmulCache({1})
 {
     std::mt19937 gen(42);
-    double limit = std::sqrt(6.0 / (inFeatures + outFeatures));
-    std::uniform_real_distribution<double> dist(-limit, limit);
+    float limit = std::sqrt(6.0 / (inFeatures + outFeatures));
+    std::uniform_real_distribution<float> dist(-limit, limit);
 
     for (size_t i = 0; i < weights.size; i++) {
         weights.data[i] = dist(gen);

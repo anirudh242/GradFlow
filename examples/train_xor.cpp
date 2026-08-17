@@ -14,11 +14,11 @@ int main() {
     // DATASET
     std::vector<int> xShape = {4, 2};
     std::vector<int> xStrides = {2, 1};
-    Tensor X(std::vector<double>{0,0, 0,1, 1,0, 1,1}, xShape, xStrides, true);
+    Tensor X(std::vector<float>{0,0, 0,1, 1,0, 1,1}, xShape, xStrides, true);
 
     std::vector<int> yShape = {4, 1};
     std::vector<int> yStrides = {1, 1};
-    Tensor Y(std::vector<double>{0, 1, 1, 0}, yShape, yStrides, true);
+    Tensor Y(std::vector<float>{0, 1, 1, 0}, yShape, yStrides, true);
 
     // MODEL ARCHITECTURE 
     Linear layer1(2, 16);

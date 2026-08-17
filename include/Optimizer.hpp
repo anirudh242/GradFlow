@@ -5,9 +5,9 @@
 class SGD {
 public:
     std::vector<Tensor*> parameters;
-    double lr;
+    float lr;
 
-    SGD(std::vector<Tensor*> params, double learningRate);
+    SGD(std::vector<Tensor*> params, float learningRate);
 
     void zeroGrad();
     void step();

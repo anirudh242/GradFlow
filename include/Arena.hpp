@@ -7,16 +7,16 @@ private:
   size_t capacity;
 
   size_t cpuOffset;
-  std::unique_ptr<double[]> cpuMemory;
+  std::unique_ptr<float[]> cpuMemory;
 
   size_t gpuOffset;
-  double* gpuMemory;
+  float* gpuMemory;
 
 public:
   Arena(size_t maxElements = 10000000);
   ~Arena();
 
-  double *allocate(size_t numElements, Device device = Device::CPU);
+  float *allocate(size_t numElements, Device device = Device::CPU);
 
   void reset();
   void print_usage() const;

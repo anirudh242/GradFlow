@@ -55,7 +55,7 @@ Tensor::Tensor(const std::vector<int>& shape, bool isParam, Device device) : sha
             grad[i] = 0.0;
         }
     } else {
-        size_t bytes = size * sizeof(double);
+        size_t bytes = size * sizeof(float);
         fillZerosVram(data, bytes);
         fillZerosVram(grad, bytes);
     }
@@ -70,7 +70,7 @@ Tensor::Tensor(const std::vector<int>& shape, bool isParam, Device device) : sha
 
 // data loading constructor, defaults to cpu
 Tensor::Tensor(
-    const std::vector<double> input_data, 
+    const std::vector<float> input_data, 
     const std::vector<int> shape, 
     const std::vector<int> strides,
     bool isParam
@@ -91,7 +91,7 @@ Tensor::Tensor(
 
 // View constructor
 // A view has its own shape and strides, but shares data and grad from another tensor.
-Tensor::Tensor(double* data_ptr, double* grad_ptr, const std::vector<int>& shape, const std::vector<int>& strides, Device device) 
+Tensor::Tensor(float* data_ptr, float* grad_ptr, const std::vector<int>& shape, const std::vector<int>& strides, Device device) 
     : data(data_ptr), grad(grad_ptr), shape(shape), strides(strides), device(device) {
     
     size_t dataSize = 1;
@@ -109,7 +109,7 @@ Tensor Tensor::to(Device target_device) const {
     Tensor result(this->shape, false, target_device);
     result.strides = this->strides;
 
-    size_t bytes = this->size * sizeof(double);
+    size_t bytes = this->size * sizeof(float);
     if (this->device == Device::CPU && target_device == Device::CUDA) {
         copyMemory(result.data, this->data, bytes, true);
         copyMemory(result.grad, this->grad, bytes, true);
@@ -121,7 +121,7 @@ Tensor Tensor::to(Device target_device) const {
     return result;
 }
 
-double& Tensor::at(const std::vector<int>& indices) {
+float& Tensor::at(const std::vector<int>& indices) {
     if (device == Device::CUDA) {
         throw std::runtime_error("Cannot dereference VRAM pointer from CPU. Call .to(Device::CPU) first.");
     }
@@ -156,7 +156,7 @@ Tensor Tensor::transpose() const {
     Tensor result(this->data, this->grad, newShape, newStrides, this->device);
     
     result.prev.push_back(this);
-    result._backward = [](const double*) {};
+    result._backward = [](const float*) {};
     result._op = "transpose";
 
     return result;
@@ -192,7 +192,7 @@ Tensor Tensor::broadcastTo(const std::vector<int>& targetShape) const {
     Tensor result(this->data, this->grad, targetShape, newStrides, this->device);
     
     result.prev.push_back(this);
-    result._backward = [](const double*) {};
+    result._backward = [](const float*) {};
     result._op = "broadcast";
     
     return result;
@@ -204,7 +204,7 @@ void Tensor::zeroGrad() {
             grad[i] = 0.0;
         }
     } else {
-        fillZerosVram(grad, size * sizeof(double));
+        fillZerosVram(grad, size * sizeof(float));
     }
 }
 
@@ -265,21 +265,21 @@ Tensor Tensor::operator+(const Tensor& other) const {
     // CPU DISPATCH
     else {
         if (!isAbroad && !isBbroad) {
-            const double* ptrA = broadA.data;
-            const double* ptrB = broadB.data;
-            double* ptrRes = result.data;
+            const float* ptrA = broadA.data;
+            const float* ptrB = broadB.data;
+            float* ptrRes = result.data;
             
             long long total_len = res_size;
-            long long aligned_len = total_len - (total_len % 4);
+            long long aligned_len = total_len - (total_len % 8);
 
             #pragma omp parallel for
-            for (long long i = 0; i < aligned_len; i += 4) {
-                __m256d vecA = _mm256_loadu_pd(&ptrA[i]);
-                __m256d vecB = _mm256_loadu_pd(&ptrB[i]);
+            for (long long i = 0; i < aligned_len; i += 8) {
+                __m256 vecA = _mm256_loadu_ps(&ptrA[i]);
+                __m256 vecB = _mm256_loadu_ps(&ptrB[i]);
                 
-                __m256d vecRes = _mm256_add_pd(vecA, vecB);
+                __m256 vecRes = _mm256_add_ps(vecA, vecB);
                 
-                _mm256_storeu_pd(&ptrRes[i], vecRes);
+                _mm256_storeu_ps(&ptrRes[i], vecRes);
             }
 
             // scalar tail
@@ -305,31 +305,31 @@ Tensor Tensor::operator+(const Tensor& other) const {
     result.prev.push_back(this);
     result.prev.push_back(&other);
 
-    double* grad_a = this->grad;
-    double* grad_b = other.grad;
+    float* grad_a = this->grad;
+    float* grad_b = other.grad;
     bool is_cuda = (this->device == Device::CUDA);
 
     result._backward = [grad_a, grad_b, isAbroad, isBbroad, 
-                        commonShape, resultStrides, broadAStrides, broadBStrides, res_size, is_cuda](const double* outGrad) {
+                        commonShape, resultStrides, broadAStrides, broadBStrides, res_size, is_cuda](const float* outGrad) {
         
         if (is_cuda) throw std::runtime_error("GPU backward pass not yet implemented.");
 
         // if no broadcasting occured we can directly map the grads
         if (!isAbroad && !isBbroad) {
             long long totalLen = res_size;
-            long long alignedLen = totalLen - (totalLen % 4);
+            long long alignedLen = totalLen - (totalLen % 8);
             
             #pragma omp parallel for
-            for (long long i = 0; i < alignedLen; i += 4) {
-                __m256d vecOut = _mm256_loadu_pd(&outGrad[i]);
+            for (long long i = 0; i < alignedLen; i += 8) {
+                __m256 vecOut = _mm256_loadu_ps(&outGrad[i]);
                 
                 // a += incoming gradient
-                __m256d vecGradA = _mm256_loadu_pd(&grad_a[i]);
-                _mm256_storeu_pd(&grad_a[i], _mm256_add_pd(vecGradA, vecOut));
+                __m256 vecGradA = _mm256_loadu_ps(&grad_a[i]);
+                _mm256_storeu_ps(&grad_a[i], _mm256_add_ps(vecGradA, vecOut));
                 
                 // b += incoming gradient
-                __m256d vecGradB = _mm256_loadu_pd(&grad_b[i]);
-                _mm256_storeu_pd(&grad_b[i], _mm256_add_pd(vecGradB, vecOut));
+                __m256 vecGradB = _mm256_loadu_ps(&grad_b[i]);
+                _mm256_storeu_ps(&grad_b[i], _mm256_add_ps(vecGradB, vecOut));
             }
             
             // scalar tail 
@@ -420,9 +420,9 @@ Tensor Tensor::operator*(const Tensor& other) const {
     int strideRes_row = result.strides[result.strides.size() - 2];
     int strideRes_col = result.strides[result.strides.size() - 1];
 
-    const double* ptrA = Ab.data;
-    const double* ptrB = Bb.data;
-    double* ptrRes = result.data;
+    const float* ptrA = Ab.data;
+    const float* ptrB = Bb.data;
+    float* ptrRes = result.data;
 
     // GPU DISPATCH
     if (this->device == Device::CUDA) {
@@ -470,7 +470,7 @@ Tensor Tensor::operator*(const Tensor& other) const {
                         for (int r = br; r < r_end; r++) {
                             for (int k = bk; k < k_end; k++) {
                                 size_t idxA = batchOffsetA + r * strideA_row + k * strideA_col;
-                                double a_val = ptrA[idxA]; 
+                                float a_val = ptrA[idxA]; 
                                 
                                 int c = bc; 
                                 
@@ -478,24 +478,24 @@ Tensor Tensor::operator*(const Tensor& other) const {
                                 // if mems not flat then (reading a col over a row) then avx will grab the wrong data
                                 if (strideB_col == 1 && strideRes_col == 1) {
                                     // Broadcast a_val to [a, a, a, a]
-                                    __m256d vec_a = _mm256_set1_pd(a_val); // copy a_val 4 times into 256 bit register
+                                    __m256 vec_a = _mm256_set1_ps(a_val); // copy a_val 8 times into 256 bit register
                                     
-                                    for (; c <= c_end - 4; c += 4) {
+                                    for (; c <= c_end - 8; c += 8) {
                                         size_t idxB = batchOffsetB + k * strideB_row + c;
                                         size_t idxRes = batchOffsetRes + r * strideRes_row + c;
                                         
-                                        __m256d vec_b = _mm256_loadu_pd(&ptrB[idxB]); // load from mem into 256 bit register
-                                        __m256d vec_res = _mm256_loadu_pd(&ptrRes[idxRes]);
+                                        __m256 vec_b = _mm256_loadu_ps(&ptrB[idxB]); // load from mem into 256 bit register
+                                        __m256 vec_res = _mm256_loadu_ps(&ptrRes[idxRes]);
                                         
-                                        __m256d vec_mul = _mm256_mul_pd(vec_a, vec_b); // multiplication with simd
-                                        vec_res = _mm256_add_pd(vec_res, vec_mul);
+                                        __m256 vec_mul = _mm256_mul_ps(vec_a, vec_b); // multiplication with simd
+                                        vec_res = _mm256_add_ps(vec_res, vec_mul);
                                         
-                                        _mm256_storeu_pd(&ptrRes[idxRes], vec_res); // back to ram
+                                        _mm256_storeu_ps(&ptrRes[idxRes], vec_res); // back to ram
                                     }
                                 }
                                 
                                 // scalar tail
-                                // avx2 works in batches of 4 so if cols % 4 != 0 then there will be leftover cols.
+                                // avx2 works in batches of 8 so if cols % 8 != 0 then there will be leftover cols.
                                 // leftover cols are processed individually with normal multiplication 
                                 for (; c < c_end; c++) {
                                     size_t idxB = batchOffsetB + k * strideB_row + c * strideB_col;
@@ -522,7 +522,7 @@ Tensor Tensor::operator*(const Tensor& other) const {
     const Tensor* other_ptr = &other;
     bool is_cuda = (this->device == Device::CUDA);
 
-    result._backward = [self, other_ptr, resShape, resStrides, res_size, is_cuda](const double* outGrad) {
+    result._backward = [self, other_ptr, resShape, resStrides, res_size, is_cuda](const float* outGrad) {
         if (is_cuda) throw std::runtime_error("GPU backward pass not yet implemented.");
 
         Tensor dC(resShape); 
@@ -575,21 +575,21 @@ Tensor Tensor::operator-(const Tensor& other) const {
     std::vector<int> broadBStrides= broadB.strides;
 
     if (!isAbroad && !isBbroad) {
-        const double* ptrA = this->data;
-        const double* ptrB = other.data;
-        double* ptrRes = result.data;
+        const float* ptrA = this->data;
+        const float* ptrB = other.data;
+        float* ptrRes = result.data;
         
         long long total_len = res_size;
-        long long aligned_len = total_len - (total_len % 4);
+        long long aligned_len = total_len - (total_len % 8);
 
         #pragma omp parallel for
-        for (long long i = 0; i < aligned_len; i += 4) {
-            __m256d vecA = _mm256_loadu_pd(&ptrA[i]);
-            __m256d vecB = _mm256_loadu_pd(&ptrB[i]);
+        for (long long i = 0; i < aligned_len; i += 8) {
+            __m256 vecA = _mm256_loadu_ps(&ptrA[i]);
+            __m256 vecB = _mm256_loadu_ps(&ptrB[i]);
             
-            __m256d vecRes = _mm256_sub_pd(vecA, vecB);
+            __m256 vecRes = _mm256_sub_ps(vecA, vecB);
             
-            _mm256_storeu_pd(&ptrRes[i], vecRes);
+            _mm256_storeu_ps(&ptrRes[i], vecRes);
         }
 
         // scalar tail
@@ -614,28 +614,28 @@ Tensor Tensor::operator-(const Tensor& other) const {
     result.prev.push_back(this);
     result.prev.push_back(&other);
 
-    double* grad_a = this->grad;
-    double* grad_b = other.grad;
+    float* grad_a = this->grad;
+    float* grad_b = other.grad;
 
     result._backward = [grad_a, grad_b, isAbroad, isBbroad, 
-                        commonShape, resultStrides, broadAStrides, broadBStrides, res_size](const double* outGrad) {
+                        commonShape, resultStrides, broadAStrides, broadBStrides, res_size](const float* outGrad) {
         
         // if no broadcasting occured we can directly map the grads
         if (!isAbroad && !isBbroad) {
             long long totalLen = res_size;
-            long long alignedLen = totalLen - (totalLen % 4);
+            long long alignedLen = totalLen - (totalLen % 8);
             
             #pragma omp parallel for
-            for (long long i = 0; i < alignedLen; i += 4) {
-                __m256d vecOut = _mm256_loadu_pd(&outGrad[i]);
+            for (long long i = 0; i < alignedLen; i += 8) {
+                __m256 vecOut = _mm256_loadu_ps(&outGrad[i]);
                 
                 // a += incoming gradient
-                __m256d vecGradA = _mm256_loadu_pd(&grad_a[i]);
-                _mm256_storeu_pd(&grad_a[i], _mm256_add_pd(vecGradA, vecOut));
+                __m256 vecGradA = _mm256_loadu_ps(&grad_a[i]);
+                _mm256_storeu_ps(&grad_a[i], _mm256_add_ps(vecGradA, vecOut));
                 
                 // b -= incoming gradient
-                __m256d vecGradB = _mm256_loadu_pd(&grad_b[i]);
-                _mm256_storeu_pd(&grad_b[i], _mm256_sub_pd(vecGradB, vecOut));
+                __m256 vecGradB = _mm256_loadu_ps(&grad_b[i]);
+                _mm256_storeu_ps(&grad_b[i], _mm256_sub_ps(vecGradB, vecOut));
             }
             
             // scalar tail 
@@ -668,7 +668,7 @@ Tensor Tensor::operator-(const Tensor& other) const {
     return result;
 }
 
-Tensor Tensor::pow(const double exp) const {
+Tensor Tensor::pow(const float exp) const {
     if (this->device == Device::CUDA) throw std::runtime_error("CUDA kernel for pow not yet implemented.");
 
     Tensor result(shape);
@@ -678,13 +678,13 @@ Tensor Tensor::pow(const double exp) const {
     }
     result.prev.push_back(this);
 
-    double* gradIn = this->grad;
-    const double* dataIn = this->data;
+    float* gradIn = this->grad;
+    const float* dataIn = this->data;
     size_t sz = this->size;
 
-    result._backward = [gradIn, dataIn, sz, exp](const double* outGrad) {
+    result._backward = [gradIn, dataIn, sz, exp](const float* outGrad) {
         for (size_t i = 0; i < sz; i++) {
-            double derivative = exp * std::pow(dataIn[i], exp-1.0);
+            float derivative = exp * std::pow(dataIn[i], exp-1.0f);
             gradIn[i] += outGrad[i] * derivative;
         }
     };
@@ -697,18 +697,18 @@ Tensor Tensor::sum() const {
     if (this->device == Device::CUDA) throw std::runtime_error("CUDA kernel for sum not yet implemented.");
 
     Tensor result({1});
-    double total = 0.0;
+    float total = 0.0;
     for (size_t i = 0; i < size; i++)
         total += data[i];
     result.data[0] = total;
 
     result.prev.push_back(this);
 
-    double* gradIn = this->grad;
+    float* gradIn = this->grad;
     size_t sz = this->size;
-    result._backward = [gradIn, sz](const double* outGrad) {
+    result._backward = [gradIn, sz](const float* outGrad) {
         for (size_t i = 0; i < sz; i++)
-            gradIn[i] += 1.0 * outGrad[0];
+            gradIn[i] += 1.0f * outGrad[0];
     };
 
     result._op = "sum";
@@ -721,18 +721,18 @@ Tensor Tensor::relu() const {
     Tensor result(shape);
 
     for (size_t i = 0; i < size; i++) {
-        result.data[i] = (data[i] > 0.0) ? data[i] : 0.0;
+        result.data[i] = (data[i] > 0.0f) ? data[i] : 0.0f;
     }
 
     result.prev.push_back(this);
 
-    double* gradIn = this->grad;
-    const double* dataIn = this->data;
+    float* gradIn = this->grad;
+    const float* dataIn = this->data;
     size_t sz = this->size;
 
-    result._backward = [gradIn, dataIn, sz](const double* outGrad) {
+    result._backward = [gradIn, dataIn, sz](const float* outGrad) {
         for (size_t i = 0; i < sz; i++) {
-            double localDer = (dataIn[i] > 0.0) ? 1.0 : 0.0;
+            float localDer = (dataIn[i] > 0.0f) ? 1.0f : 0.0f;
             gradIn[i] += outGrad[i] * localDer;
         }
     };

@@ -19,7 +19,7 @@ std::string shape_to_string(const std::vector<int>& shape) {
     return ss.str();
 }
 
-std::string array_to_string(const double* arr, size_t size, size_t max_items = 3) {
+std::string array_to_string(const float* arr, size_t size, size_t max_items = 3) {
     if (!arr || size == 0) return "[]";
     std::stringstream ss;
     ss << "[";

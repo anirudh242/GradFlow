@@ -13,15 +13,15 @@ int main() {
     std::cout << "GENERATING CIRCLE DATASET\n";
     
     int numSamples = 200;
-    std::vector<double> xData(numSamples * 2);
-    std::vector<double> yData(numSamples * 1);
+    std::vector<float> xData(numSamples * 2);
+    std::vector<float> yData(numSamples * 1);
 
     std::mt19937 gen(123); 
-    std::uniform_real_distribution<double> dist(-1.0, 1.0);
+    std::uniform_real_distribution<float> dist(-1.0, 1.0);
 
     for(int i = 0; i < numSamples; i++) {
-        double x1 = dist(gen);
-        double x2 = dist(gen);
+        float x1 = dist(gen);
+        float x2 = dist(gen);
         xData[i*2] = x1;
         xData[i*2+1] = x2;
         yData[i] = ((x1 * x1) + (x2 * x2) < 0.36) ? 1.0 : 0.0;

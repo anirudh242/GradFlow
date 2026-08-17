@@ -9,7 +9,7 @@ Arena paramArena(100000000);
 Arena::Arena(size_t maxElements)
     : capacity(maxElements), 
       cpuOffset(0),
-      cpuMemory(std::make_unique<double[]>(maxElements)),
+      cpuMemory(std::make_unique<float[]>(maxElements)),
       gpuOffset(0),
       gpuMemory(nullptr) {}
 
@@ -19,12 +19,12 @@ Arena::~Arena() {
     }
 }
 
-double *Arena::allocate(size_t numElements, Device device) {
+float *Arena::allocate(size_t numElements, Device device) {
     if (device == Device::CPU) {
         if (cpuOffset + numElements > capacity)
             throw std::runtime_error(
                 "Arena out of memory, please increase capacity.");
-        double *ptr = cpuMemory.get() + cpuOffset;
+        float *ptr = cpuMemory.get() + cpuOffset;
         cpuOffset += numElements;
         return ptr;
     } else {
@@ -33,13 +33,13 @@ double *Arena::allocate(size_t numElements, Device device) {
         
         if (gpuMemory == nullptr) {
             std::cout << "Arena initializing " << (capacity * 8.0 / 1024 / 1024) << "MB out of VRAM" << std::endl;
-            gpuMemory = allocateVram(capacity * sizeof(double));
+            gpuMemory = allocateVram(capacity * sizeof(float));
             if (gpuMemory == nullptr) {
                 throw std::runtime_error("Fatal: cudaMalloc failed to allocate VRAM.");
             }
         }
 
-        double *ptr = gpuMemory;
+        float *ptr = gpuMemory;
         gpuOffset += numElements;
         return ptr;
     }

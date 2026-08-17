@@ -6,8 +6,8 @@
 static void BM_NaiveMatMul(benchmark::State& state) {
     int size = state.range(0);
     
-    std::vector<double> dataA(size * size, 1.0);
-    std::vector<double> dataB(size * size, 1.0);
+    std::vector<float> dataA(size * size, 1.0);
+    std::vector<float> dataB(size * size, 1.0);
     
     // Allocate A and B in paramArena (isParam = true)
     Tensor A(dataA, {size, size}, {size, 1}, true);
@@ -23,8 +23,8 @@ static void BM_NaiveMatMul(benchmark::State& state) {
 static void BM_TensorAdd(benchmark::State& state) {
     int size = state.range(0);
     
-    std::vector<double> dataA(size * size, 1.0);
-    std::vector<double> dataB(size * size, 2.0);
+    std::vector<float> dataA(size * size, 1.0);
+    std::vector<float> dataB(size * size, 2.0);
     
     Tensor A(dataA, {size, size}, {size, 1}, true);
     Tensor B(dataB, {size, size}, {size, 1}, true);

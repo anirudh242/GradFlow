@@ -1,6 +1,6 @@
 #include "Optimizer.hpp"
 
-SGD::SGD(std::vector<Tensor*> params, double learningRate) : parameters(params), lr(learningRate) {}
+SGD::SGD(std::vector<Tensor*> params, float learningRate) : parameters(params), lr(learningRate) {}
 
 void SGD::zeroGrad() {
     for (Tensor* p : parameters) {
