@@ -1,6 +1,6 @@
 #include <benchmark/benchmark.h>
 #include "Tensor.hpp"
-#include "Arena.hpp" // CRITICAL: Need this to access globalArena
+#include "Arena.hpp" 
 #include <vector>
 
 static void BM_NaiveMatMul(benchmark::State& state) {
@@ -9,18 +9,13 @@ static void BM_NaiveMatMul(benchmark::State& state) {
     std::vector<double> dataA(size * size, 1.0);
     std::vector<double> dataB(size * size, 1.0);
     
-    // 1. Setup: Allocate A and B in paramArena (isParam = true)
-    // This protects them from the compute arena reset.
+    // Allocate A and B in paramArena (isParam = true)
     Tensor A(dataA, {size, size}, {size, 1}, true);
     Tensor B(dataB, {size, size}, {size, 1}, true);
 
-    // 2. Core Loop
     for (auto _ : state) {
         Tensor C = A * B; // Allocates C in globalArena
-        
         benchmark::DoNotOptimize(C); 
-        
-        // 3. Reset the compute arena so we don't OOM!
         globalArena.reset(); 
     }
 }
@@ -31,24 +26,41 @@ static void BM_TensorAdd(benchmark::State& state) {
     std::vector<double> dataA(size * size, 1.0);
     std::vector<double> dataB(size * size, 2.0);
     
-    // Allocate A and B in paramArena (isParam = true) to protect them from reset
     Tensor A(dataA, {size, size}, {size, 1}, true);
     Tensor B(dataB, {size, size}, {size, 1}, true);
 
     for (auto _ : state) {
-        // This will call your new operator+
         Tensor C = A + B; 
-        
         benchmark::DoNotOptimize(C); 
-        
-        // Reset the compute arena to prevent OOM errors on large sizes
         globalArena.reset(); 
     }
-    paramArena.reset();
+}
+
+static void BM_TiledMatMul(benchmark::State& state) {
+    int size = state.range(0);
+    
+    // 1. Create tensors DIRECTLY on the GPU in paramArena (isParam = true).
+    // This protects them from the globalArena reset in the loop.
+    // They initialize to 0.0, which perfectly simulates math load.
+    Tensor A_gpu({size, size}, true, Device::CUDA);
+    Tensor B_gpu({size, size}, true, Device::CUDA);
+    
+    for (auto _ : state) {
+        // 2. Timer starts: Multiply pure VRAM pointers (No memory allocation tax!)
+        // Note: Our C++ wrapper inside cuda_kernels.cu already calls cudaDeviceSynchronize()
+        Tensor C_gpu = A_gpu * B_gpu;
+        
+        benchmark::DoNotOptimize(C_gpu);
+        
+        // 3. Reset compute arena to avoid OOM
+        globalArena.reset(); 
+    }
 }
 
 BENCHMARK(BM_TensorAdd)->RangeMultiplier(2)->Range(256, 2048);
-
 BENCHMARK(BM_NaiveMatMul)->RangeMultiplier(2)->Range(64, 512);
+
+// DON'T FORGET TO REGISTER THE NEW BENCHMARK
+BENCHMARK(BM_TiledMatMul)->RangeMultiplier(2)->Range(64, 512);
 
 BENCHMARK_MAIN();

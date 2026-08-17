@@ -2,6 +2,7 @@
 #include <vector>
 #include <functional>
 #include <string>
+#include "Device.hpp"
 
 class Tensor {
 public:
@@ -14,8 +15,14 @@ public:
     std::function<void(const double*)> _backward;
     std::string _op;
 
-    Tensor(const std::vector<int>& shape, bool isParam = false);
+    Device device = Device::CPU;
+
+    Tensor to(Device target_device) const;
+
+    Tensor(const std::vector<int>& shape, bool isParam = false, Device device = Device::CPU);
     Tensor(const std::vector<double> data, const std::vector<int> shape, const std::vector<int> strides, bool isParam= false);
+    // View constructor
+    Tensor(double* data_ptr, double* grad_ptr, const std::vector<int>& shape, const std::vector<int>& strides, Device device); 
 
     double& at(const std::vector<int>& indices);
     Tensor broadcastTo(const std::vector<int>& targetShape) const;

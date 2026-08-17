@@ -6,6 +6,7 @@
 #include <cmath>
 #include <immintrin.h>
 #include <omp.h>
+#include "cuda_kernels.cuh"
 
 // Helper to find broadcasted shape of 2 shapes
 std::vector<int> broadcastShapes(const std::vector<int>& shapeA, const std::vector<int>& shapeB) {
@@ -32,7 +33,7 @@ std::vector<int> broadcastShapes(const std::vector<int>& shapeA, const std::vect
     return outShape;
 }
 
-Tensor::Tensor(const std::vector<int>& shape, bool isParam) : shape(shape) {
+Tensor::Tensor(const std::vector<int>& shape, bool isParam, Device device) : shape(shape), device(device) {
     size_t dataSize = 1;
     for (int i : shape) {
         dataSize *= i;  
@@ -40,16 +41,23 @@ Tensor::Tensor(const std::vector<int>& shape, bool isParam) : shape(shape) {
     size = dataSize;
 
     if (isParam) {
-        data = paramArena.allocate(size);
-        grad = paramArena.allocate(size);
+        data = paramArena.allocate(size, device);
+        grad = paramArena.allocate(size, device);
     } else {
-        data = globalArena.allocate(size);
-        grad = globalArena.allocate(size);
+        data = globalArena.allocate(size, device);
+        grad = globalArena.allocate(size, device);
     }
 
-    for (size_t i = 0; i < size; i++) {
-        data[i] = 0.0;
-        grad[i] = 0.0;
+    // only iterate on CPU mem, use cudaMemset bridge for GPU.
+    if (device == Device::CPU) {
+        for (size_t i = 0; i < size; i++) {
+            data[i] = 0.0;
+            grad[i] = 0.0;
+        }
+    } else {
+        size_t bytes = size * sizeof(double);
+        fillZerosVram(data, bytes);
+        fillZerosVram(grad, bytes);
     }
 
     strides.resize(shape.size());
@@ -60,19 +68,20 @@ Tensor::Tensor(const std::vector<int>& shape, bool isParam) : shape(shape) {
     }
 }
 
+// data loading constructor, defaults to cpu
 Tensor::Tensor(
     const std::vector<double> input_data, 
     const std::vector<int> shape, 
     const std::vector<int> strides,
     bool isParam
-) : shape(shape), strides(strides) {
+) : shape(shape), strides(strides), device(Device::CPU) {
     size = input_data.size();
     if (isParam) {
-        data = paramArena.allocate(size);
-        grad = paramArena.allocate(size);
+        data = paramArena.allocate(size, Device::CPU);
+        grad = paramArena.allocate(size, Device::CPU);
     } else {
-        data = globalArena.allocate(size);
-        grad = globalArena.allocate(size);
+        data = globalArena.allocate(size, Device::CPU);
+        grad = globalArena.allocate(size, Device::CPU);
     }
     for (size_t i = 0; i < size; i++) {
         data[i] = input_data[i];
@@ -80,7 +89,43 @@ Tensor::Tensor(
     }
 }
 
+// View constructor
+// A view has its own shape and strides, but shares data and grad from another tensor.
+Tensor::Tensor(double* data_ptr, double* grad_ptr, const std::vector<int>& shape, const std::vector<int>& strides, Device device) 
+    : data(data_ptr), grad(grad_ptr), shape(shape), strides(strides), device(device) {
+    
+    size_t dataSize = 1;
+    for (int i : shape) {
+        dataSize *= i;  
+    }
+    this->size = dataSize; 
+}
+
+Tensor Tensor::to(Device target_device) const {
+    if (this->device == target_device) {
+        return *this;
+    }
+
+    Tensor result(this->shape, false, target_device);
+    result.strides = this->strides;
+
+    size_t bytes = this->size * sizeof(double);
+    if (this->device == Device::CPU && target_device == Device::CUDA) {
+        copyMemory(result.data, this->data, bytes, true);
+        copyMemory(result.grad, this->grad, bytes, true);
+    } else if (this->device == Device::CUDA && target_device == Device::CPU) {
+        copyMemory(result.data, this->data, bytes, false);
+        copyMemory(result.grad, this->grad, bytes, false);
+    }
+
+    return result;
+}
+
 double& Tensor::at(const std::vector<int>& indices) {
+    if (device == Device::CUDA) {
+        throw std::runtime_error("Cannot dereference VRAM pointer from CPU. Call .to(Device::CPU) first.");
+    }
+
     if (indices.size() != shape.size()) {
         throw std::invalid_argument("No. of indices does not match rank");
     }
@@ -99,23 +144,67 @@ double& Tensor::at(const std::vector<int>& indices) {
 
 Tensor Tensor::transpose() const {
     int ndim = shape.size();
-    if (ndim < 2) 
-        return *this;
+    if (ndim < 2) return *this;
 
     std::vector<int> newShape = shape;
     std::vector<int> newStrides = strides;
 
-    // batches stay the same, rows and cols of 2d matrices swap
     std::swap(newShape[ndim - 1], newShape[ndim - 2]);
     std::swap(newStrides[ndim - 1], newStrides[ndim - 2]);
 
-    std::vector<double> vec_data(data, data + size);
-    return Tensor(vec_data, newShape, newStrides);
+    // return a view 
+    Tensor result(this->data, this->grad, newShape, newStrides, this->device);
+    
+    result.prev.push_back(this);
+    result._backward = [](const double*) {};
+    result._op = "transpose";
+
+    return result;
+}
+
+Tensor Tensor::broadcastTo(const std::vector<int>& targetShape) const {
+    if (this->shape == targetShape) {
+        return *this; 
+    }
+
+    int ndimCurrent = shape.size();
+    int ndimTarget = targetShape.size();
+    if (ndimTarget < ndimCurrent)
+        throw std::runtime_error("Target shape can't have less dimensions than current shape");
+
+    std::vector<int> newStrides(targetShape.size(), 0);
+
+    for (int i = 0; i < ndimTarget; i++) {
+        int targetidx = ndimTarget - i - 1;
+        int currentidx = ndimCurrent - i - 1;
+        int targetDimSize = targetShape[targetidx];
+        int currDimSize = (currentidx >= 0) ? shape[currentidx] : 1; 
+       
+        if (currDimSize == targetDimSize)
+            newStrides[targetidx] = (currentidx >= 0) ? strides[currentidx] : 0;
+        else if (currDimSize == 1)
+            newStrides[targetidx] = 0; // virtual expansion (stride 0)
+        else
+            throw std::runtime_error("Shapes can't be broadcasted");
+    }
+
+    // return view
+    Tensor result(this->data, this->grad, targetShape, newStrides, this->device);
+    
+    result.prev.push_back(this);
+    result._backward = [](const double*) {};
+    result._op = "broadcast";
+    
+    return result;
 }
 
 void Tensor::zeroGrad() {
-    for (size_t i = 0; i < size; i++) {
-        grad[i] = 0.0;
+    if (device == Device::CPU) {
+        for (size_t i = 0; i < size; i++) {
+            grad[i] = 0.0;
+        }
+    } else {
+        fillZerosVram(grad, size * sizeof(double));
     }
 }
 
@@ -145,43 +234,15 @@ void Tensor::backward() {
     }
 }
 
-Tensor Tensor::broadcastTo(const std::vector<int>& targetShape) const {
-    int ndimCurrent = shape.size();
-    int ndimTarget = targetShape.size();
-    if (ndimTarget < ndimCurrent)
-        throw std::runtime_error("Target shape can't have less dimensions than current shape");
-
-    std::vector<int> newStrides(targetShape.size(), 0);
-
-    for (int i = 0; i < ndimTarget; i++) {
-        // at i = 0 these point to the back of the arrays.
-        // we are traversing them backwards
-        int targetidx = ndimTarget - i - 1;
-        int currentidx = ndimCurrent - i - 1;
-
-        // if our currentidx is -1 (i.e there is no matching dim to targetidx) then we imagine it as 1. [3] = [1, 3] (1 row 3 cols)
-        int targetDimSize = targetShape[targetidx];
-        int currDimSize = (currentidx >= 0) ? shape[currentidx] : 1; 
-       
-        if (currDimSize == targetDimSize)
-            newStrides[targetidx] = (currentidx >= 0) ? strides[currentidx] : 0;
-        else if (currDimSize == 1)
-            newStrides[targetidx] = 0;
-        else
-            throw std::runtime_error("Shapes can't be broadcasted");
-    }
-
-    std::vector<double> vec_data(data, data + size);
-    return Tensor(vec_data, targetShape, newStrides);
-}
-
 Tensor Tensor::operator+(const Tensor& other) const {
+    if (this->device != other.device) throw std::runtime_error("Tensors must be on same device to add.");
+
     // broadcasting
     std::vector<int> commonShape = broadcastShapes(shape, other.shape);
     Tensor broadA = broadcastTo(commonShape);
     Tensor broadB = other.broadcastTo(commonShape);
 
-    Tensor result(commonShape);
+    Tensor result(commonShape, false, this->device);
     
     size_t res_size = result.size;
 
@@ -193,40 +254,51 @@ Tensor Tensor::operator+(const Tensor& other) const {
     std::vector<int> broadAStrides = broadA.strides;
     std::vector<int> broadBStrides= broadB.strides;
 
-    if (!isAbroad && !isBbroad) {
-        const double* ptrA = this->data;
-        const double* ptrB = other.data;
-        double* ptrRes = result.data;
-        
-        long long total_len = res_size;
-        long long aligned_len = total_len - (total_len % 4);
-
-        #pragma omp parallel for
-        for (long long i = 0; i < aligned_len; i += 4) {
-            __m256d vecA = _mm256_loadu_pd(&ptrA[i]);
-            __m256d vecB = _mm256_loadu_pd(&ptrB[i]);
-            
-            __m256d vecRes = _mm256_add_pd(vecA, vecB);
-            
-            _mm256_storeu_pd(&ptrRes[i], vecRes);
+    // GPU DISPATCH
+    if (this->device == Device::CUDA) {
+        if (!isAbroad && !isBbroad) {
+            launchAddKernel(broadA.data, broadB.data, result.data, res_size);
+        } else {
+            throw std::runtime_error("Batched CUDA Add not yet implemented.");
         }
+    } 
+    // CPU DISPATCH
+    else {
+        if (!isAbroad && !isBbroad) {
+            const double* ptrA = broadA.data;
+            const double* ptrB = broadB.data;
+            double* ptrRes = result.data;
+            
+            long long total_len = res_size;
+            long long aligned_len = total_len - (total_len % 4);
 
-        // scalar tail
-        for (long long i = aligned_len; i < total_len; i++) {
-            ptrRes[i] = ptrA[i] + ptrB[i];
-        }
-    } else {
-        for (size_t flati = 0; flati < res_size; flati++) {
-            size_t flatA = 0;
-            size_t flatB = 0;
-
-            for (size_t j = 0; j < commonShape.size(); j++) {
-                int axis = (flati / resultStrides[j]) % commonShape[j];
-                flatA += axis * broadAStrides[j];
-                flatB += axis * broadBStrides[j];
+            #pragma omp parallel for
+            for (long long i = 0; i < aligned_len; i += 4) {
+                __m256d vecA = _mm256_loadu_pd(&ptrA[i]);
+                __m256d vecB = _mm256_loadu_pd(&ptrB[i]);
+                
+                __m256d vecRes = _mm256_add_pd(vecA, vecB);
+                
+                _mm256_storeu_pd(&ptrRes[i], vecRes);
             }
-            
-            result.data[flati] = broadA.data[flatA] + broadB.data[flatB];
+
+            // scalar tail
+            for (long long i = aligned_len; i < total_len; i++) {
+                ptrRes[i] = ptrA[i] + ptrB[i];
+            }
+        } else {
+            for (size_t flati = 0; flati < res_size; flati++) {
+                size_t flatA = 0;
+                size_t flatB = 0;
+
+                for (size_t j = 0; j < commonShape.size(); j++) {
+                    int axis = (flati / resultStrides[j]) % commonShape[j];
+                    flatA += axis * broadAStrides[j];
+                    flatB += axis * broadBStrides[j];
+                }
+                
+                result.data[flati] = broadA.data[flatA] + broadB.data[flatB];
+            }
         }
     }
 
@@ -235,9 +307,13 @@ Tensor Tensor::operator+(const Tensor& other) const {
 
     double* grad_a = this->grad;
     double* grad_b = other.grad;
+    bool is_cuda = (this->device == Device::CUDA);
 
     result._backward = [grad_a, grad_b, isAbroad, isBbroad, 
-                        commonShape, resultStrides, broadAStrides, broadBStrides, res_size](const double* outGrad) {
+                        commonShape, resultStrides, broadAStrides, broadBStrides, res_size, is_cuda](const double* outGrad) {
+        
+        if (is_cuda) throw std::runtime_error("GPU backward pass not yet implemented.");
+
         // if no broadcasting occured we can directly map the grads
         if (!isAbroad && !isBbroad) {
             long long totalLen = res_size;
@@ -287,6 +363,8 @@ Tensor Tensor::operator+(const Tensor& other) const {
 }
 
 Tensor Tensor::operator*(const Tensor& other) const {
+    if (this->device != other.device) throw std::runtime_error("Tensors must be on same device to multiply.");
+
     int colsA = shape[shape.size() - 1];
     int rowsA = shape[shape.size() - 2];
     int colsB = other.shape[other.shape.size() - 1];
@@ -318,7 +396,8 @@ Tensor Tensor::operator*(const Tensor& other) const {
     std::vector<int> finalShape = finalBatchShape;
     finalShape.push_back(rowsA);
     finalShape.push_back(colsB);
-    Tensor result(finalShape);
+    
+    Tensor result(finalShape, false, this->device);
 
     int totalBatches = 1;
     for (int dim : finalBatchShape) {
@@ -345,74 +424,85 @@ Tensor Tensor::operator*(const Tensor& other) const {
     const double* ptrB = Bb.data;
     double* ptrRes = result.data;
 
-    constexpr int BLOCK_SIZE = 32;
-
-    for (int b = 0; b < totalBatches; b++) {
-        size_t batchOffsetA = 0;
-        size_t batchOffsetB = 0;
-        size_t batchOffsetRes = 0;
-
-        for (size_t i = 0; i < finalBatchShape.size(); i++) {
-            int coord = (b / batchStrides[i]) % finalBatchShape[i];
-            batchOffsetA += coord * Ab.strides[i];
-            batchOffsetB += coord * Bb.strides[i];
-            batchOffsetRes += coord * result.strides[i];
+    // GPU DISPATCH
+    if (this->device == Device::CUDA) {
+        if (totalBatches == 1) {
+            launchTiledMatmulKernel(ptrA, ptrB, ptrRes, rowsA, colsA, colsB);
+        } else {
+            throw std::runtime_error("Batched CUDA MatMul not yet implemented.");
         }
+    } 
+    // CPU DISPATCH
+    else {
+        constexpr int BLOCK_SIZE = 32;
 
-        for (int r = 0; r < rowsA; r++) {
-            for (int c = 0; c < colsB; c++) {
-                size_t idxRes = batchOffsetRes + r * strideRes_row + c * strideRes_col;
-                ptrRes[idxRes] = 0.0;
+        for (int b = 0; b < totalBatches; b++) {
+            size_t batchOffsetA = 0;
+            size_t batchOffsetB = 0;
+            size_t batchOffsetRes = 0;
+
+            for (size_t i = 0; i < finalBatchShape.size(); i++) {
+                int coord = (b / batchStrides[i]) % finalBatchShape[i];
+                batchOffsetA += coord * Ab.strides[i];
+                batchOffsetB += coord * Bb.strides[i];
+                batchOffsetRes += coord * result.strides[i];
             }
-        }
 
-        // outer loops move 64x64 tiles; br, bk, bc = boundaries of curr tile
-        // using openmp to use all 16 cores (multithreading)
-        #pragma omp parallel for
-        for (int br = 0; br < rowsA; br += BLOCK_SIZE) {
-            for (int bk = 0; bk < colsA; bk += BLOCK_SIZE) {
-                for (int bc = 0; bc < colsB; bc += BLOCK_SIZE) {
-                    // prevent index out of bounds
-                    int r_end = std::min(br + BLOCK_SIZE, rowsA);
-                    int k_end = std::min(bk + BLOCK_SIZE, colsA);
-                    int c_end = std::min(bc + BLOCK_SIZE, colsB);
+            for (int r = 0; r < rowsA; r++) {
+                for (int c = 0; c < colsB; c++) {
+                    size_t idxRes = batchOffsetRes + r * strideRes_row + c * strideRes_col;
+                    ptrRes[idxRes] = 0.0;
+                }
+            }
 
-                    // matmul loops
-                    for (int r = br; r < r_end; r++) {
-                        for (int k = bk; k < k_end; k++) {
-                            size_t idxA = batchOffsetA + r * strideA_row + k * strideA_col;
-                            double a_val = ptrA[idxA]; 
-                            
-                            int c = bc; 
-                            
-                            // avx2 path
-                            // if mems not flat then (reading a col over a row) then avx will grab the wrong data
-                            if (strideB_col == 1 && strideRes_col == 1) {
-                                // Broadcast a_val to [a, a, a, a]
-                                __m256d vec_a = _mm256_set1_pd(a_val); // copy a_val 4 times into 256 bit register
+            // outer loops move 64x64 tiles; br, bk, bc = boundaries of curr tile
+            // using openmp to use all 16 cores (multithreading)
+            #pragma omp parallel for
+            for (int br = 0; br < rowsA; br += BLOCK_SIZE) {
+                for (int bk = 0; bk < colsA; bk += BLOCK_SIZE) {
+                    for (int bc = 0; bc < colsB; bc += BLOCK_SIZE) {
+                        // prevent index out of bounds
+                        int r_end = std::min(br + BLOCK_SIZE, rowsA);
+                        int k_end = std::min(bk + BLOCK_SIZE, colsA);
+                        int c_end = std::min(bc + BLOCK_SIZE, colsB);
+
+                        // matmul loops
+                        for (int r = br; r < r_end; r++) {
+                            for (int k = bk; k < k_end; k++) {
+                                size_t idxA = batchOffsetA + r * strideA_row + k * strideA_col;
+                                double a_val = ptrA[idxA]; 
                                 
-                                for (; c <= c_end - 4; c += 4) {
-                                    size_t idxB = batchOffsetB + k * strideB_row + c;
-                                    size_t idxRes = batchOffsetRes + r * strideRes_row + c;
+                                int c = bc; 
+                                
+                                // avx2 path
+                                // if mems not flat then (reading a col over a row) then avx will grab the wrong data
+                                if (strideB_col == 1 && strideRes_col == 1) {
+                                    // Broadcast a_val to [a, a, a, a]
+                                    __m256d vec_a = _mm256_set1_pd(a_val); // copy a_val 4 times into 256 bit register
                                     
-                                    __m256d vec_b = _mm256_loadu_pd(&ptrB[idxB]); // load from mem into 256 bit register
-                                    __m256d vec_res = _mm256_loadu_pd(&ptrRes[idxRes]);
-                                    
-                                    __m256d vec_mul = _mm256_mul_pd(vec_a, vec_b); // multiplication with simd
-                                    vec_res = _mm256_add_pd(vec_res, vec_mul);
-                                    
-                                    _mm256_storeu_pd(&ptrRes[idxRes], vec_res); // back to ram
+                                    for (; c <= c_end - 4; c += 4) {
+                                        size_t idxB = batchOffsetB + k * strideB_row + c;
+                                        size_t idxRes = batchOffsetRes + r * strideRes_row + c;
+                                        
+                                        __m256d vec_b = _mm256_loadu_pd(&ptrB[idxB]); // load from mem into 256 bit register
+                                        __m256d vec_res = _mm256_loadu_pd(&ptrRes[idxRes]);
+                                        
+                                        __m256d vec_mul = _mm256_mul_pd(vec_a, vec_b); // multiplication with simd
+                                        vec_res = _mm256_add_pd(vec_res, vec_mul);
+                                        
+                                        _mm256_storeu_pd(&ptrRes[idxRes], vec_res); // back to ram
+                                    }
                                 }
-                            }
-                            
-                            // scalar tail
-                            // avx2 works in batches of 4 so if cols % 4 != 0 then there will be leftover cols.
-                            // leftover cols are processed individually with normal multiplication 
-                            for (; c < c_end; c++) {
-                                size_t idxB = batchOffsetB + k * strideB_row + c * strideB_col;
-                                size_t idxRes = batchOffsetRes + r * strideRes_row + c * strideRes_col;
                                 
-                                ptrRes[idxRes] += a_val * ptrB[idxB];
+                                // scalar tail
+                                // avx2 works in batches of 4 so if cols % 4 != 0 then there will be leftover cols.
+                                // leftover cols are processed individually with normal multiplication 
+                                for (; c < c_end; c++) {
+                                    size_t idxB = batchOffsetB + k * strideB_row + c * strideB_col;
+                                    size_t idxRes = batchOffsetRes + r * strideRes_row + c * strideRes_col;
+                                    
+                                    ptrRes[idxRes] += a_val * ptrB[idxB];
+                                }
                             }
                         }
                     }
@@ -430,8 +520,11 @@ Tensor Tensor::operator*(const Tensor& other) const {
 
     const Tensor* self = this;
     const Tensor* other_ptr = &other;
+    bool is_cuda = (this->device == Device::CUDA);
 
-    result._backward = [self, other_ptr, resShape, resStrides, res_size](const double* outGrad) {
+    result._backward = [self, other_ptr, resShape, resStrides, res_size, is_cuda](const double* outGrad) {
+        if (is_cuda) throw std::runtime_error("GPU backward pass not yet implemented.");
+
         Tensor dC(resShape); 
         
         #pragma omp parallel for
@@ -461,6 +554,9 @@ Tensor Tensor::operator*(const Tensor& other) const {
 }
 
 Tensor Tensor::operator-(const Tensor& other) const {
+    if (this->device != other.device) throw std::runtime_error("Tensors must be on same device to subtract.");
+    if (this->device == Device::CUDA) throw std::runtime_error("CUDA kernel for subtraction not yet implemented.");
+
     // broadcasting
     std::vector<int> commonShape = broadcastShapes(shape, other.shape);
     Tensor broadA = broadcastTo(commonShape);
@@ -573,6 +669,8 @@ Tensor Tensor::operator-(const Tensor& other) const {
 }
 
 Tensor Tensor::pow(const double exp) const {
+    if (this->device == Device::CUDA) throw std::runtime_error("CUDA kernel for pow not yet implemented.");
+
     Tensor result(shape);
     
     for (size_t i = 0; i < size; i++) {
@@ -596,6 +694,8 @@ Tensor Tensor::pow(const double exp) const {
 }
 
 Tensor Tensor::sum() const {
+    if (this->device == Device::CUDA) throw std::runtime_error("CUDA kernel for sum not yet implemented.");
+
     Tensor result({1});
     double total = 0.0;
     for (size_t i = 0; i < size; i++)
@@ -616,6 +716,8 @@ Tensor Tensor::sum() const {
 }
 
 Tensor Tensor::relu() const {
+    if (this->device == Device::CUDA) throw std::runtime_error("CUDA kernel for relu not yet implemented.");
+
     Tensor result(shape);
 
     for (size_t i = 0; i < size; i++) {
